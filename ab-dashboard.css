@@ -840,6 +840,31 @@ th {
   margin-top: 10px;
 }
 
+.formula-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.formula-compare-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid rgba(29, 59, 79, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.formula-compare-toggle input {
+  margin: 0;
+  accent-color: var(--brand);
+}
+
 .formula-helper-box {
   border-style: dashed;
   background: rgba(244, 250, 248, 0.9);

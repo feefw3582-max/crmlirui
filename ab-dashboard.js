@@ -554,6 +554,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       label: label,
       type: type,
       formula: getDefaultFormulaForPreset(presetId, baseMetrics),
+      compareToControl: false,
       selected: presetId !== "preset_confidence",
       isCustom: false
     };
@@ -566,6 +567,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       label: config.label || ("自定义统计量" + (index + 1)),
       type: config.type === "percent" ? "percent" : "number",
       formula: String(config.formula || "").trim(),
+      compareToControl: Boolean(config.compareToControl),
       selected: config.selected !== false,
       isCustom: Boolean(config.isCustom),
       order: Number.isFinite(config.order) ? config.order : index
@@ -609,7 +611,8 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
         formula: config.formula,
         validation: config.validation,
         presetId: config.presetId,
-        isCustom: config.isCustom
+        isCustom: config.isCustom,
+        compareToControl: Boolean(config.compareToControl)
       };
     });
   }
@@ -1374,15 +1377,18 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       const xRows = options.rows.filter(function (row) {
         return getXAxisValue(row, xFieldId) === xValue;
       });
+      let controlValues = null;
 
       if (options.selectedControls.length) {
         const controlRows = xRows.filter(function (row) {
           return options.selectedControls.includes(row.groupName);
         });
         const controlBase = buildMergedControlMetrics(xRows, options.selectedControls, schema);
-        const controlValues = computeMetricValues(schema, controlBase, controlRows);
+        controlValues = computeMetricValues(schema, controlBase, controlRows);
         schema.metrics.forEach(function (metric) {
-          point[getSeriesMetricKey("control_merged", metric.id)] = controlValues[metric.id];
+          point[getSeriesMetricKey("control_merged", metric.id)] = isCompareToControlMetric(metric)
+            ? null
+            : controlValues[metric.id];
         });
       }
 
@@ -1394,7 +1400,9 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
         const baseMetrics = aggregateRows(experimentRows, schema);
         const experimentValues = computeMetricValues(schema, baseMetrics, experimentRows);
         schema.metrics.forEach(function (metric) {
-          point[getSeriesMetricKey(key, metric.id)] = experimentValues[metric.id];
+          point[getSeriesMetricKey(key, metric.id)] = isCompareToControlMetric(metric)
+            ? calculateLift(experimentValues[metric.id], controlValues ? controlValues[metric.id] : null)
+            : experimentValues[metric.id];
         });
       });
 
@@ -1626,8 +1634,11 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
 
   function formatAxisMetricValue(metric, value) {
     if (!Number.isFinite(value)) return "--";
-    const formatted = Number.isInteger(value) ? integerFormatter.format(value) : numberFormatter.format(value);
-    return metric && metric.type === "percent" ? formatted + "%" : formatted;
+    const usePercent = metric && (metric.type === "percent" || isCompareToControlMetric(metric));
+    const formatted = usePercent
+      ? numberFormatter.format(value)
+      : (Number.isInteger(value) ? integerFormatter.format(value) : numberFormatter.format(value));
+    return usePercent ? formatted + "%" : formatted;
   }
 
   function detectMetricConcept(normalizedName) {
@@ -1756,6 +1767,51 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
   function formatLift(value) {
     if (value === null || value === undefined || Number.isNaN(value)) return "基准";
     return (value > 0 ? "+" : "") + numberFormatter.format(value) + "%";
+  }
+
+  function isCompareToControlMetric(metric) {
+    return Boolean(metric && metric.compareToControl);
+  }
+
+  function getMetricDisplayLabel(metric) {
+    if (!metric) return "";
+    return isCompareToControlMetric(metric) ? metric.label + "（绝对比值）" : metric.label;
+  }
+
+  function formatCompareMetric(value) {
+    if (value === null || value === undefined || Number.isNaN(value)) return "--";
+    return (value > 0 ? "+" : "") + numberFormatter.format(value) + "%";
+  }
+
+  function formatTrendMetric(metric, value) {
+    if (isCompareToControlMetric(metric)) {
+      return formatCompareMetric(value);
+    }
+    return formatMetric(metric, value);
+  }
+
+  function getComparisonMetricDisplayValue(metric, row) {
+    if (isCompareToControlMetric(metric) && row.groupType === "experiment") {
+      return row.lifts[metric.id];
+    }
+    return row.values[metric.id];
+  }
+
+  function getComparisonMetricSecondaryInfo(metric, row) {
+    if (isCompareToControlMetric(metric) && row.groupType === "experiment") {
+      if (row.values[metric.id] === null || row.values[metric.id] === undefined || Number.isNaN(row.values[metric.id])) {
+        return null;
+      }
+      return {
+        className: "base",
+        text: "绝对值 " + formatMetric(metric, row.values[metric.id])
+      };
+    }
+    const lift = row.lifts[metric.id];
+    return {
+      className: lift === null ? "base" : (lift >= 0 ? "positive" : "negative"),
+      text: formatLift(lift)
+    };
   }
 
   function cnDate(value) {
@@ -2146,7 +2202,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       '</select></label>' +
       '<label class="field"><span>因变量（Y 轴）</span><select id="trendMetricSelect">' +
       schema.metrics.map(function (metric) {
-        return '<option value="' + escapeHtml(metric.id) + '"' + (state.trendMetric === metric.id ? " selected" : "") + '>' + escapeHtml(metric.label) + "</option>";
+        return '<option value="' + escapeHtml(metric.id) + '"' + (state.trendMetric === metric.id ? " selected" : "") + '>' + escapeHtml(getMetricDisplayLabel(metric)) + "</option>";
       }).join("") +
       '</select></label>' +
       '<label class="field"><span>图表类型</span><select id="trendChartTypeSelect">' +
@@ -2157,7 +2213,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       "</div>" +
       '<div class="button-row"><div class="segment">' +
       schema.metrics.map(function (metric) {
-        return '<button type="button" data-trend-metric="' + metric.id + '" class="' + (state.trendMetric === metric.id ? "active" : "") + '">' + escapeHtml(metric.label) + "</button>";
+        return '<button type="button" data-trend-metric="' + metric.id + '" class="' + (state.trendMetric === metric.id ? "active" : "") + '">' + escapeHtml(getMetricDisplayLabel(metric)) + "</button>";
       }).join("") +
       '</div><button type="button" class="button-ghost" id="showAllSeriesBtn">显示全部曲线</button></div>' +
       '<div class="legend-row" style="margin-top: 12px;">' +
@@ -2254,7 +2310,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       visibleMetrics.map(function (metric) {
         const active = state.tableSort.metricId === metric.id;
         const arrow = active ? (state.tableSort.direction === "desc" ? "↓" : "↑") : "↕";
-        return '<th><button type="button" class="table-sort ' + (active ? "active" : "") + '" data-sort-metric="' + metric.id + '">' + escapeHtml(metric.label) + "<span>" + arrow + "</span></button></th>";
+        return '<th><button type="button" class="table-sort ' + (active ? "active" : "") + '" data-sort-metric="' + metric.id + '">' + escapeHtml(getMetricDisplayLabel(metric)) + "<span>" + arrow + "</span></button></th>";
       }).join("") +
       "</tr></thead><tbody>" +
       sortedRows.map(function (row) {
@@ -2263,11 +2319,12 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
           escapeHtml(row.hasData ? (row.groupType === "control" ? "来源：" + row.sourceGroups.join("、") : "实验组单独展示") : "当前切片下暂无样本") +
           "</span></td>" +
           visibleMetrics.map(function (metric) {
-            const lift = row.lifts[metric.id];
-            const liftClass = lift === null ? "base" : (lift >= 0 ? "positive" : "negative");
+            const mainValue = getComparisonMetricDisplayValue(metric, row);
+            const secondaryInfo = getComparisonMetricSecondaryInfo(metric, row);
             return (
-              "<td><span class=\"metric-main\">" + escapeHtml(formatMetric(metric, row.values[metric.id])) + '</span><span class="lift ' + liftClass + '">' +
-              escapeHtml(formatLift(lift)) + "</span></td>"
+              "<td><span class=\"metric-main\">" + escapeHtml(isCompareToControlMetric(metric) && row.groupType === "experiment" ? formatCompareMetric(mainValue) : formatMetric(metric, mainValue)) + '</span>' +
+              (secondaryInfo ? '<span class="lift ' + secondaryInfo.className + '">' + escapeHtml(secondaryInfo.text) + "</span>" : "") +
+              "</td>"
             );
           }).join("") +
           "</tr>"
@@ -2345,7 +2402,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       const dots = drawablePoints.map(function (point) {
         return (
           '<circle cx="' + point.x.toFixed(2) + '" cy="' + point.y.toFixed(2) + '" r="3.5" fill="' + SERIES_COLORS[index % SERIES_COLORS.length] + '"><title>' +
-          escapeHtml(series.label + " | " + formatXAxisTooltip(trendBundle.xFieldId, point.xValue) + " | " + formatMetric(metric, point.value)) +
+          escapeHtml(series.label + " | " + formatXAxisTooltip(trendBundle.xFieldId, point.xValue) + " | " + formatTrendMetric(metric, point.value)) +
           "</title></circle>"
         );
       }).join("");
@@ -2373,7 +2430,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       seriesPaths +
       empty +
       "</svg>" +
-      '<div class="chart-meta"><span>X 轴：' + escapeHtml(getTrendXAxisLabel(schema, trendBundle.xFieldId)) + ' · Y 轴：' + escapeHtml(metric ? metric.label : "") + "</span><span>Y 轴会按当前可见曲线自动适配，缺失点位不会再被误画成 0。</span></div>"
+      '<div class="chart-meta"><span>X 轴：' + escapeHtml(getTrendXAxisLabel(schema, trendBundle.xFieldId)) + ' · Y 轴：' + escapeHtml(metric ? getMetricDisplayLabel(metric) : "") + "</span><span>Y 轴会按当前可见曲线自动适配，缺失点位不会再被误画成 0。</span></div>"
     );
   }
 
@@ -2543,10 +2600,13 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     const direction = state.tableSort.direction === "asc" ? 1 : -1;
     const controlRows = rows.filter(function (row) { return row.groupType === "control"; });
     const experimentRows = rows.filter(function (row) { return row.groupType !== "control"; }).slice();
+    const metric = state.schema && state.schema.metrics
+      ? state.schema.metrics.find(function (item) { return item.id === metricId; })
+      : null;
 
     experimentRows.sort(function (left, right) {
-      const leftValue = left.values[metricId];
-      const rightValue = right.values[metricId];
+      const leftValue = metric ? getComparisonMetricDisplayValue(metric, left) : left.values[metricId];
+      const rightValue = metric ? getComparisonMetricDisplayValue(metric, right) : right.values[metricId];
       if (leftValue === null && rightValue === null) return collator.compare(left.label, right.label);
       if (leftValue === null) return 1;
       if (rightValue === null) return -1;
@@ -2603,13 +2663,13 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       },
       {
         label: "全周期峰值",
-        value: peak ? peak.seriesLabel + " · " + formatMetric(metric, peak.value) : "暂无峰值",
+        value: peak ? peak.seriesLabel + " · " + formatTrendMetric(metric, peak.value) : "暂无峰值",
         note: peak ? formatXAxisTooltip(trendBundle.xFieldId, peak.xValue) : "当前横轴范围内没有有效点位"
       },
       {
         label: "趋势动量",
         value: momentum ? momentum.seriesLabel + " " + momentum.direction : "暂无趋势结论",
-        note: momentum ? "首日到末日变化 " + formatMetric(metric, Math.abs(momentum.delta)) : "至少需要两个有效点位"
+        note: momentum ? "首日到末日变化 " + formatTrendMetric(metric, Math.abs(momentum.delta)) : "至少需要两个有效点位"
       }
     ];
   }
@@ -3357,6 +3417,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       label: "鑷畾涔夌粺璁￠噺" + nextIndex,
       type: "number",
       formula: "",
+      compareToControl: false,
       selected: true,
       isCustom: true,
       order: nextOrder
@@ -3401,7 +3462,8 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       warnings.map(function (warning) {
         return '<div class="field-note error">' + escapeHtml(warning) + "</div>";
       }).join("") +
-      "</div></article>"
+      "</div>" +
+      '<div class="formula-card-actions"><label class="formula-compare-toggle"><input type="checkbox" data-formula-compare="' + escapeHtml(config.id) + '"' + (config.compareToControl ? " checked" : "") + ' /><span>算环比</span></label></div></article>'
     );
   }
 
@@ -3733,6 +3795,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       const labelInput = document.querySelector('[data-formula-label="' + configId + '"]');
       const typeSelect = document.querySelector('[data-formula-type="' + configId + '"]');
       const expressionInput = document.querySelector('[data-formula-expression="' + configId + '"]');
+      const compareInput = document.querySelector('[data-formula-compare="' + configId + '"]');
       const existing = configMap[configId] || {};
       configMap[configId] = {
         id: configId,
@@ -3740,6 +3803,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
         label: labelInput && String(labelInput.value).trim() ? String(labelInput.value).trim() : (existing.label || "鑷畾涔夌粺璁￠噺"),
         type: typeSelect && typeSelect.value === "percent" ? "percent" : "number",
         formula: expressionInput ? String(expressionInput.value || "").trim() : (existing.formula || ""),
+        compareToControl: compareInput ? Boolean(compareInput.checked) : Boolean(existing.compareToControl),
         selected: true,
         isCustom: card.getAttribute("data-is-custom") === "true" || existing.isCustom,
         order: Number(card.getAttribute("data-order"))
@@ -3754,6 +3818,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
         label: config.label,
         type: config.type,
         formula: config.formula,
+        compareToControl: Boolean(config.compareToControl),
         selected: config.selected !== false,
         isCustom: Boolean(config.isCustom),
         order: Number.isFinite(config.order) ? config.order : 0
@@ -3946,6 +4011,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       label: "自定义统计量" + nextIndex,
       type: "number",
       formula: "",
+      compareToControl: false,
       selected: true,
       isCustom: true,
       order: nextOrder
@@ -3988,7 +4054,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       warnings.map(function (warning) {
         return '<div class="field-note error">' + escapeHtml(warning) + "</div>";
       }).join("") +
-      "</div></article>"
+      '</div><div class="formula-card-actions"><label class="formula-compare-toggle"><input type="checkbox" data-formula-compare="' + escapeHtml(config.id) + '"' + (config.compareToControl ? " checked" : "") + ' /><span>算环比</span></label></div></article>'
     );
   }
 
@@ -4053,7 +4119,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       const dots = drawablePoints.map(function (point) {
         return (
           '<circle cx="' + point.x.toFixed(2) + '" cy="' + point.y.toFixed(2) + '" r="3.5" fill="' + SERIES_COLORS[index % SERIES_COLORS.length] + '"><title>' +
-          escapeHtml(series.label + " | " + formatXAxisTooltip(trendBundle.xFieldId, point.xValue) + " | " + formatMetric(metric, point.value)) +
+          escapeHtml(series.label + " | " + formatXAxisTooltip(trendBundle.xFieldId, point.xValue) + " | " + formatTrendMetric(metric, point.value)) +
           "</title></circle>"
         );
       }).join("");
@@ -4081,7 +4147,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       seriesPaths +
       empty +
       "</svg>" +
-      '<div class="chart-meta"><span>图表：折线图 / X 轴：' + escapeHtml(getTrendXAxisLabel(schema, trendBundle.xFieldId)) + ' / Y 轴：' + escapeHtml(metric ? metric.label : "") + '</span><span>当数值全为 0 或 1，或几乎没有跨度时，会自动改用兜底刻度。</span></div>'
+      '<div class="chart-meta"><span>图表：折线图 / X 轴：' + escapeHtml(getTrendXAxisLabel(schema, trendBundle.xFieldId)) + ' / Y 轴：' + escapeHtml(metric ? getMetricDisplayLabel(metric) : "") + '</span><span>当数值全为 0 或 1，或几乎没有跨度时，会自动改用兜底刻度。</span></div>'
     );
   }
 
@@ -4124,7 +4190,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
         barCount += 1;
         return (
           '<rect x="' + x.toFixed(2) + '" y="' + (baseY - heightValue).toFixed(2) + '" width="' + barWidth.toFixed(2) + '" height="' + heightValue.toFixed(2) + '" rx="6" fill="' + SERIES_COLORS[seriesIndex % SERIES_COLORS.length] + '">' +
-          '<title>' + escapeHtml(series.label + " | " + formatXAxisTooltip(trendBundle.xFieldId, point.xValue) + " | " + formatMetric(metric, value)) + "</title></rect>"
+          '<title>' + escapeHtml(series.label + " | " + formatXAxisTooltip(trendBundle.xFieldId, point.xValue) + " | " + formatTrendMetric(metric, value)) + "</title></rect>"
         );
       }).join("");
     }).join("");
@@ -4144,7 +4210,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       bars +
       empty +
       "</svg>" +
-      '<div class="chart-meta"><span>图表：柱状图 / X 轴：' + escapeHtml(getTrendXAxisLabel(schema, trendBundle.xFieldId)) + ' / Y 轴：' + escapeHtml(metric ? metric.label : "") + '</span><span>柱状图沿用当前序列显示状态，并在低跨度场景下启用兜底刻度。</span></div>'
+      '<div class="chart-meta"><span>图表：柱状图 / X 轴：' + escapeHtml(getTrendXAxisLabel(schema, trendBundle.xFieldId)) + ' / Y 轴：' + escapeHtml(metric ? getMetricDisplayLabel(metric) : "") + '</span><span>柱状图沿用当前序列显示状态，并在低跨度场景下启用兜底刻度。</span></div>'
     );
   }
 
@@ -4166,7 +4232,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
         '<svg class="chart-svg" viewBox="0 0 ' + width + " " + height + '" role="img" aria-label="饼图">' +
         '<text x="' + width / 2 + '" y="' + height / 2 + '" text-anchor="middle" font-size="16" fill="#5d6570">当前筛选条件下没有可绘制的饼图数据</text>' +
         "</svg>" +
-        '<div class="chart-meta"><span>图表：饼图 / 指标：' + escapeHtml(metric ? metric.label : "") + '</span><span>单序列时按当前 X 轴分类，多序列时按组别汇总。</span></div>'
+        '<div class="chart-meta"><span>图表：饼图 / 指标：' + escapeHtml(metric ? getMetricDisplayLabel(metric) : "") + '</span><span>单序列时按当前 X 轴分类，多序列时按组别汇总。</span></div>'
       );
     }
 
@@ -4175,7 +4241,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       const ratio = slice.value / total;
       const endAngle = startAngle + ratio * Math.PI * 2;
       const path = describePieArc(cx, cy, radius, startAngle, endAngle);
-      const arc = '<path d="' + path + '" fill="' + SERIES_COLORS[index % SERIES_COLORS.length] + '" stroke="#f7f3e7" stroke-width="2"><title>' + escapeHtml(slice.label + " | " + formatMetric(metric, slice.value) + " | " + numberFormatter.format(ratio * 100) + "%") + "</title></path>";
+      const arc = '<path d="' + path + '" fill="' + SERIES_COLORS[index % SERIES_COLORS.length] + '" stroke="#f7f3e7" stroke-width="2"><title>' + escapeHtml(slice.label + " | " + formatTrendMetric(metric, slice.value) + " | " + numberFormatter.format(ratio * 100) + "%") + "</title></path>";
       startAngle = endAngle;
       return arc;
     }).join("");
@@ -4185,15 +4251,15 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       arcs +
       '<circle cx="' + cx + '" cy="' + cy + '" r="54" fill="#fffaf0"></circle>' +
       '<text x="' + cx + '" y="' + (cy - 6) + '" text-anchor="middle" font-size="13" fill="#5d6570">总量</text>' +
-      '<text x="' + cx + '" y="' + (cy + 18) + '" text-anchor="middle" font-size="20" font-weight="700" fill="#213547">' + escapeHtml(formatMetric(metric, total)) + "</text>" +
+      '<text x="' + cx + '" y="' + (cy + 18) + '" text-anchor="middle" font-size="20" font-weight="700" fill="#213547">' + escapeHtml(formatTrendMetric(metric, total)) + "</text>" +
       '<foreignObject x="500" y="40" width="370" height="270"><div xmlns="http://www.w3.org/1999/xhtml" class="pie-sidecar">' +
       slices.map(function (slice, index) {
         const ratio = total ? slice.value / total * 100 : 0;
-        return '<div class="pie-legend-item"><span class="dot" style="background:' + SERIES_COLORS[index % SERIES_COLORS.length] + '"></span><strong>' + escapeHtml(slice.label) + '</strong><span>' + escapeHtml(formatMetric(metric, slice.value)) + '</span><small>' + escapeHtml(numberFormatter.format(ratio) + '%') + '</small></div>';
+        return '<div class="pie-legend-item"><span class="dot" style="background:' + SERIES_COLORS[index % SERIES_COLORS.length] + '"></span><strong>' + escapeHtml(slice.label) + '</strong><span>' + escapeHtml(formatTrendMetric(metric, slice.value)) + '</span><small>' + escapeHtml(numberFormatter.format(ratio) + '%') + '</small></div>';
       }).join("") +
       '</div></foreignObject>' +
       "</svg>" +
-      '<div class="chart-meta"><span>图表：饼图 / 指标：' + escapeHtml(metric ? metric.label : "") + '</span><span>单序列时按当前 X 轴分类，多序列时按可见组别汇总占比。</span></div>'
+      '<div class="chart-meta"><span>图表：饼图 / 指标：' + escapeHtml(metric ? getMetricDisplayLabel(metric) : "") + '</span><span>单序列时按当前 X 轴分类，多序列时按可见组别汇总占比。</span></div>'
     );
   }
 

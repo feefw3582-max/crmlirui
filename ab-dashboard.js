@@ -97,6 +97,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     caliber: "summary",
     trendXAxis: "date",
     trendChartType: "line",
+    trendZoomScale: 1,
     trendMetric: "",
     tableSort: { metricId: "", direction: "desc" },
     breakdownField: "",
@@ -116,6 +117,8 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       groupTypeField: ""
     }
   };
+
+  let trendChartRefreshFrame = 0;
 
   function setLoading(value) {
     state.loading = value;
@@ -155,6 +158,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       state.formulaOverrides = [];
       state.dimensionFilters = {};
       state.dimensionFilterFields = [];
+      state.trendZoomScale = 1;
       rebuildFromRawRows();
       state.fileName = file.name;
       state.sourceLabel = sourceLabel;
@@ -306,7 +310,8 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
         return {
           id: "dimension:" + column.normalized,
           key: column.key,
-          label: column.label
+          label: column.label,
+          normalized: column.normalized
         };
       });
 
@@ -485,6 +490,14 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     schema.dimensionFields.forEach(function (field) {
       dimensions[field.id] = readValue(row, field.key) || "未标注";
     });
+
+    let hasAggregateAllDimension = false;
+    schema.dimensionFields.forEach(function (field) {
+      if (!hasAggregateAllDimension && isExcludedAggregateDimensionValue(field, dimensions[field.id])) {
+        hasAggregateAllDimension = true;
+      }
+    });
+    if (hasAggregateAllDimension) return null;
 
     const explicitGroupType = schema.groupTypeField ? normalizeExplicitGroupType(readValue(row, schema.groupTypeField)) : null;
     const experimentId = schema.experimentField ? readValue(row, schema.experimentField) || "默认实验" : "默认实验";
@@ -868,6 +881,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       state.hiddenSeries = [];
       state.trendXAxis = "date";
       state.trendChartType = "line";
+      state.trendZoomScale = 1;
       state.trendMetric = "";
       state.tableSort = { metricId: "", direction: "desc" };
       return;
@@ -954,6 +968,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     if (!["line", "bar", "pie"].includes(state.trendChartType)) {
       state.trendChartType = "line";
     }
+    state.trendZoomScale = clampTrendZoomScale(state.trendZoomScale);
     if (!state.tableSort.metricId || !nextMetricIds.includes(state.tableSort.metricId)) {
       state.tableSort.metricId = nextMetricIds[0] || "";
       state.tableSort.direction = "desc";
@@ -1461,6 +1476,64 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     }).join("||");
   }
 
+  function isExcludedAggregateDimensionValue(field, value) {
+    if (!field || !value) return false;
+    if (normalizeHeader(value) !== "all") return false;
+    const fieldIdentity = [
+      field.normalized,
+      normalizeHeader(field.label || ""),
+      normalizeHeader(field.key || ""),
+      normalizeHeader(field.id || "")
+    ].join("|");
+    return /(grade|subject|年级|学科)/i.test(fieldIdentity);
+  }
+
+  function clampTrendZoomScale(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return 1;
+    return Math.min(10, Math.max(0.1, numeric));
+  }
+
+  function sliderValueToTrendZoomScale(rawValue) {
+    const sliderValue = Math.min(100, Math.max(0, Number(rawValue)));
+    if (sliderValue <= 50) {
+      const ratio = sliderValue / 50;
+      return Number((0.1 + ratio * 0.9).toFixed(2));
+    }
+    return Number((1 + ((sliderValue - 50) / 50) * 9).toFixed(2));
+  }
+
+  function trendZoomScaleToSliderValue(scale) {
+    const safeScale = clampTrendZoomScale(scale);
+    if (safeScale <= 1) {
+      return Math.round(((safeScale - 0.1) / 0.9) * 50);
+    }
+    return Math.round(50 + ((safeScale - 1) / 9) * 50);
+  }
+
+  function formatTrendZoomScale(scale) {
+    const safeScale = clampTrendZoomScale(scale);
+    return safeScale >= 1 ? safeScale.toFixed(1) : safeScale.toFixed(2);
+  }
+
+  function computeScaledTrendDomain(domain, scale) {
+    const baseMin = Number.isFinite(domain[0]) ? domain[0] : 0;
+    const baseMax = Number.isFinite(domain[1]) ? domain[1] : 1;
+    const safeScale = clampTrendZoomScale(scale);
+    if (!(baseMax > baseMin)) {
+      return [baseMin, baseMax === baseMin ? baseMin + 1 : baseMax];
+    }
+    if (safeScale === 1) {
+      return [baseMin, baseMax];
+    }
+    if (safeScale > 1) {
+      const nextMin = baseMax - (baseMax - baseMin) / safeScale;
+      return [Number(nextMin.toFixed(6)), baseMax];
+    }
+    const expandedMax = baseMin + (baseMax - baseMin) / safeScale;
+    return [baseMin, Number(expandedMax.toFixed(6))];
+  }
+
   function computeYAxisDomain(data, visibleSeriesKeys, metricId) {
     const values = [];
     data.forEach(function (point) {
@@ -1508,26 +1581,13 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     });
   }
 
-  function buildFallbackYAxisTickValues(values) {
-    if (!values.length) return [0, 0.25, 0.5, 0.75, 1];
-    const min = values[0];
-    const max = values[values.length - 1];
-    const lower = min === max ? 0 : min;
-    const upper = max === 0 ? 1 : max;
-    const span = upper - lower || upper || 1;
-    const candidates = [0, lower, lower + span / 4, lower + span / 2, lower + span * 3 / 4, upper];
-    const seen = {};
-    return candidates
-      .map(function (value) {
-        return Number(value.toFixed(6));
-      })
-      .filter(function (value) {
-        const key = String(value);
-        if (seen[key]) return false;
-        seen[key] = true;
-        return true;
-      })
-      .sort(function (left, right) { return left - right; });
+  function buildFallbackYAxisTickValues(values, domain) {
+    const min = Number.isFinite(domain && domain[0]) ? domain[0] : (values.length ? values[0] : 0);
+    const max = Number.isFinite(domain && domain[1]) ? domain[1] : (values.length ? values[values.length - 1] : 1);
+    const safeMax = max === min ? min + 1 : max;
+    return Array.from({ length: 5 }, function (_, index) {
+      return Number((min + ((safeMax - min) * index) / 4).toFixed(6));
+    });
   }
 
   function projectTrendY(value, minY, maxY, padding, innerHeight) {
@@ -1541,7 +1601,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     const maxY = domain[1];
     const safeSpan = maxY - minY || 1;
     const tickValues = shouldUseFallbackYAxisTicks(values)
-      ? buildFallbackYAxisTickValues(values)
+      ? buildFallbackYAxisTickValues(values, domain)
       : Array.from({ length: 5 }, function (_, index) {
           const ratio = index / 4;
           return maxY - safeSpan * ratio;
@@ -2003,6 +2063,8 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
 
   function renderTrendPanel(schema, trendBundle, comparisonRows) {
     const xAxisOptions = getTrendXAxisOptions(schema);
+    const zoomSliderValue = trendZoomScaleToSliderValue(state.trendZoomScale);
+    const zoomDisabled = state.trendChartType === "pie";
     if (!xAxisOptions.length) {
       return (
         '<section class="panel" id="trendPanel"><div class="panel-head"><div><p class="eyebrow">趋势图表</p><h2>趋势与关系图</h2></div></div>' +
@@ -2020,6 +2082,11 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       '<div class="panel-head"><div><p class="eyebrow">趋势图表</p><h2>趋势与关系图</h2>' +
       '<div class="subtitle">现在可以自己选自变量和因变量，组别仍然会按当前全局 AB 选择进行对比。</div></div></div>' +
       '<div class="trend-config-grid">' +
+      '<label class="field trend-scale-field"><span>Y 轴倍数</span><div class="trend-scale-card">' +
+      '<div class="trend-scale-head"><strong id="trendZoomValue">×' + escapeHtml(formatTrendZoomScale(state.trendZoomScale)) + '</strong><small id="trendZoomHint">' + escapeHtml(zoomDisabled ? "饼图模式下不应用 Y 轴倍数" : "中点为 ×1，向右放大，向左缩小") + '</small></div>' +
+      '<input id="trendZoomScaleInput" class="scale-slider" type="range" min="0" max="100" step="1" value="' + zoomSliderValue + '" style="--slider-progress:' + zoomSliderValue + '%;"' + (zoomDisabled ? " disabled" : "") + ' />' +
+      '<div class="scale-label-row"><span>×0.10</span><span>×1.0</span><span>×10</span></div>' +
+      "</div></label>" +
       '<label class="field"><span>自变量（X 轴）</span><select id="trendXAxisSelect">' +
       xAxisOptions.map(function (option) {
         return '<option value="' + escapeHtml(option.id) + '"' + (state.trendXAxis === option.id ? " selected" : "") + '>' + escapeHtml(option.label) + "</option>";
@@ -2619,6 +2686,67 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     void exportSection(document.getElementById("trendPanel"), "ab-trend-chart");
   });
 
+  function syncTrendZoomControls(input) {
+    const slider = input || document.getElementById("trendZoomScaleInput");
+    const valueNode = document.getElementById("trendZoomValue");
+    const hintNode = document.getElementById("trendZoomHint");
+    if (slider) {
+      slider.style.setProperty("--slider-progress", String(slider.value) + "%");
+    }
+    if (valueNode) {
+      valueNode.textContent = "×" + formatTrendZoomScale(state.trendZoomScale);
+    }
+    if (hintNode) {
+      hintNode.textContent = state.trendChartType === "pie"
+        ? "饼图模式下不应用 Y 轴倍数"
+        : "中点为 ×1，向右放大，向左缩小";
+    }
+  }
+
+  function updateTrendChartShell() {
+    const schema = state.schema;
+    if (!schema) return;
+    const trendPanel = document.getElementById("trendPanel");
+    const chartShell = trendPanel ? trendPanel.querySelector(".chart-shell") : null;
+    if (!chartShell) return;
+
+    const experimentIds = getExperimentIds(state.records);
+    const resolvedExperimentId = resolveExperimentId(experimentIds, state.experimentQuery);
+    const scope = getExperimentScope(state.records, resolvedExperimentId);
+    if (!scope) return;
+
+    const dateFilteredRows = schema.dateField
+      ? filterRowsByDateRange(scope.rows, state.dateRange.start, state.dateRange.end)
+      : scope.rows;
+    const filteredRows = filterRowsByDimensionFilters(dateFilteredRows, state.dimensionFilters);
+    const trendBundle = buildTrendData({
+      rows: filteredRows,
+      selectedControls: state.selectedControls,
+      selectedExperiments: state.selectedExperiments,
+      schema: schema,
+      xFieldId: state.trendXAxis
+    });
+    const visibleSeriesKeys = trendBundle.seriesMeta
+      .map(function (item) { return item.key; })
+      .filter(function (key) { return !state.hiddenSeries.includes(key); });
+    chartShell.innerHTML = renderTrendSvg(schema, trendBundle, visibleSeriesKeys);
+    syncTrendZoomControls();
+  }
+
+  function scheduleTrendChartRefresh() {
+    if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
+      updateTrendChartShell();
+      return;
+    }
+    if (trendChartRefreshFrame) {
+      window.cancelAnimationFrame(trendChartRefreshFrame);
+    }
+    trendChartRefreshFrame = window.requestAnimationFrame(function () {
+      trendChartRefreshFrame = 0;
+      updateTrendChartShell();
+    });
+  }
+
   function wireDashboardEvents(scope) {
     const experimentInput = document.getElementById("experimentQueryInput");
     const startDateInput = document.getElementById("startDateInput");
@@ -2631,6 +2759,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     const trendXAxisSelect = document.getElementById("trendXAxisSelect");
     const trendMetricSelect = document.getElementById("trendMetricSelect");
     const trendChartTypeSelect = document.getElementById("trendChartTypeSelect");
+    const trendZoomScaleInput = document.getElementById("trendZoomScaleInput");
     const addBreakdownFieldBtn = document.getElementById("addBreakdownFieldBtn");
 
     if (experimentInput) {
@@ -2673,6 +2802,15 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       trendChartTypeSelect.addEventListener("change", function (event) {
         state.trendChartType = event.target.value;
         render();
+      });
+    }
+
+    if (trendZoomScaleInput) {
+      syncTrendZoomControls(trendZoomScaleInput);
+      trendZoomScaleInput.addEventListener("input", function (event) {
+        state.trendZoomScale = sliderValueToTrendZoomScale(event.target.value);
+        syncTrendZoomControls(event.target);
+        scheduleTrendChartRefresh();
       });
     }
 
@@ -3714,7 +3852,10 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     const innerWidth = width - padding.left - padding.right;
     const innerHeight = height - padding.top - padding.bottom;
     const values = collectTrendMetricValues(data, visibleSeriesKeys, state.trendMetric);
-    const domain = computeYAxisDomain(data, visibleSeriesKeys, state.trendMetric);
+    const domain = computeScaledTrendDomain(
+      computeYAxisDomain(data, visibleSeriesKeys, state.trendMetric),
+      state.trendZoomScale
+    );
     const minY = domain[0];
     const maxY = domain[1];
     const xStep = data.length > 1 ? innerWidth / (data.length - 1) : innerWidth / 2;
@@ -3790,7 +3931,10 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     const innerWidth = width - padding.left - padding.right;
     const innerHeight = height - padding.top - padding.bottom;
     const values = collectTrendMetricValues(data, visibleSeriesKeys, state.trendMetric);
-    const domain = computeYAxisDomain(data, visibleSeriesKeys, state.trendMetric);
+    const domain = computeScaledTrendDomain(
+      computeYAxisDomain(data, visibleSeriesKeys, state.trendMetric),
+      state.trendZoomScale
+    );
     const minY = domain[0];
     const maxY = domain[1];
     const slotWidth = data.length ? innerWidth / data.length : innerWidth;
@@ -3980,6 +4124,10 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       renderTrendSvg: renderTrendSvg,
       buildTrendYAxisTicks: buildTrendYAxisTicks,
       computeYAxisDomain: computeYAxisDomain,
+      computeScaledTrendDomain: computeScaledTrendDomain,
+      sliderValueToTrendZoomScale: sliderValueToTrendZoomScale,
+      trendZoomScaleToSliderValue: trendZoomScaleToSliderValue,
+      isExcludedAggregateDimensionValue: isExcludedAggregateDimensionValue,
       state: state
     };
   }

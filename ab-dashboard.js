@@ -2103,7 +2103,12 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       escapeHtml(subtitle) +
       '</div></div><div class="button-row"><span class="note">点击指标表头排序</span></div></div>' +
       renderMetricVisibilityToolbar(schema, state.hiddenSummaryMetrics, "summary", "核心对比列显示控制") +
-      renderComparisonTable(schema, comparisonRows, { hiddenMetricIds: state.hiddenSummaryMetrics }) +
+      renderComparisonTable(schema, comparisonRows, {
+        hiddenMetricIds: state.hiddenSummaryMetrics,
+        tableId: "summary-comparison-table",
+        exportFileName: "ab-summary-table",
+        exportTitle: "Summary comparison table"
+      }) +
       "</section>"
     );
   }
@@ -2203,7 +2208,12 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
           '<button class="accordion-trigger" type="button" data-toggle-dimension="' + escapeHtml(key) + '">' +
           '<div><strong>' + escapeHtml(section.label) + '</strong><div class="muted">' + (open ? "点击收起当前属性组合" : "点击展开当前属性组合") + "</div></div>" +
           "<strong>" + (open ? "−" : "+") + "</strong></button>" +
-          (open ? '<div class="accordion-body">' + renderComparisonTable(schema, section.rows, { hiddenMetricIds: state.hiddenDimensionMetrics }) + "</div>" : "") +
+          (open ? '<div class="accordion-body">' + renderComparisonTable(schema, section.rows, {
+            hiddenMetricIds: state.hiddenDimensionMetrics,
+            tableId: "dimension-table-" + slugify(key),
+            exportFileName: "ab-dimension-" + slugify(key),
+            exportTitle: section.label + " comparison table"
+          }) + "</div>" : "") +
           "</article>"
         );
       }).join("") +
@@ -2230,13 +2240,17 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     const sortedRows = sortComparisonRows(rows);
     const hiddenMetricIds = options && options.hiddenMetricIds ? options.hiddenMetricIds : [];
     const visibleMetrics = getVisibleMetrics(schema, hiddenMetricIds);
+    const tableId = options && options.tableId ? options.tableId : ("comparison-table-" + Math.random().toString(36).slice(2, 8));
+    const exportFileName = options && options.exportFileName ? options.exportFileName : "ab-table-export";
+    const exportTitle = options && options.exportTitle ? options.exportTitle : "AB table export";
 
     if (!visibleMetrics.length) {
       return '<div class="empty inline-empty"><div><strong>当前已隐藏全部统计列</strong><p class="muted">点击上方列显示控制，重新打开你想看的指标列。</p></div></div>';
     }
 
     return (
-      '<div class="table-wrap"><table><thead><tr><th class="sticky-col">组别</th>' +
+      '<div class="table-toolbar"><button type="button" class="button-ghost mini" data-export-table="' + escapeHtml(tableId) + '" data-export-file="' + escapeHtml(exportFileName) + '" data-export-title="' + escapeHtml(exportTitle) + '">导出 PDF</button></div>' +
+      '<div class="table-wrap"><table id="' + escapeHtml(tableId) + '"><thead><tr><th class="sticky-col">组别</th>' +
       visibleMetrics.map(function (metric) {
         const active = state.tableSort.metricId === metric.id;
         const arrow = active ? (state.tableSort.direction === "desc" ? "↓" : "↑") : "↕";
@@ -2451,7 +2465,8 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
 
   function renderColumnProfileTable(schema) {
     return (
-      '<div class="table-wrap recognition-table-wrap"><table class="recognition-table"><thead><tr><th>字段名</th><th>角色</th><th>值类型</th><th>样例值</th></tr></thead><tbody>' +
+      '<div class="table-toolbar"><button type="button" class="button-ghost mini" data-export-table="recognition-profile-table" data-export-file="ab-column-profile" data-export-title="字段画像表">导出 PDF</button></div>' +
+      '<div class="table-wrap recognition-table-wrap"><table id="recognition-profile-table" class="recognition-table"><thead><tr><th>字段名</th><th>角色</th><th>值类型</th><th>样例值</th></tr></thead><tbody>' +
       schema.columns.map(function (column) {
         const role = getColumnRole(schema, column.key);
         const typeLabel = column.dateRatio >= 0.7
@@ -2936,6 +2951,15 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       });
     });
 
+    Array.prototype.forEach.call(document.querySelectorAll("[data-export-table]"), function (button) {
+      button.addEventListener("click", function () {
+        const tableId = button.getAttribute("data-export-table");
+        const fileName = button.getAttribute("data-export-file") || "ab-table-export";
+        const title = button.getAttribute("data-export-title") || "AB table export";
+        void exportTableAsPdf(document.getElementById(tableId), fileName, title);
+      });
+    });
+
     Array.prototype.forEach.call(document.querySelectorAll("[data-toggle-dimension-field]"), function (button) {
       button.addEventListener("click", function () {
         const fieldId = button.getAttribute("data-toggle-dimension-field");
@@ -3255,6 +3279,48 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     link.href = canvas.toDataURL("image/png");
     link.download = fileName + ".png";
     link.click();
+  }
+
+  async function exportTableAsPdf(tableNode, fileName, title) {
+    if (!tableNode) return;
+    if (typeof html2canvas !== "function") {
+      alert("当前页面没有成功加载导出依赖，请优先通过本地文件或本地服务打开。");
+      return;
+    }
+
+    const canvas = await html2canvas(tableNode, {
+      backgroundColor: "#ffffff",
+      scale: 2,
+      useCORS: true,
+      logging: false,
+      width: tableNode.scrollWidth,
+      height: tableNode.scrollHeight,
+      windowWidth: tableNode.scrollWidth,
+      windowHeight: tableNode.scrollHeight,
+      scrollX: 0,
+      scrollY: 0
+    });
+
+    const imageData = canvas.toDataURL("image/png");
+    const win = window.open("", "_blank", "noopener,noreferrer,width=1280,height=900");
+    if (!win) {
+      alert("导出窗口被浏览器拦截，请允许弹窗后重试。");
+      return;
+    }
+
+    win.document.write(
+      '<!doctype html><html><head><meta charset="utf-8"><title>' + escapeHtml(fileName) + '</title>' +
+      '<style>@page{size:A3 landscape;margin:12mm}body{margin:0;font-family:Segoe UI,system-ui,sans-serif;color:#111}.shell{display:flex;flex-direction:column;gap:10px}h1{margin:0;font-size:20px}img{width:100%;height:auto;border:1px solid #e5e7eb;border-radius:6px}</style>' +
+      '</head><body><div class="shell">' +
+      (title ? '<h1>' + escapeHtml(title) + '</h1>' : "") +
+      '<img src="' + imageData + '" alt="table export" /></div></body></html>'
+    );
+    win.document.close();
+    win.focus();
+    win.onload = function () {
+      win.print();
+      setTimeout(function () { win.close(); }, 400);
+    };
   }
 
   function filterRowsByDimensionFilters(rows, dimensionFilters) {

@@ -572,6 +572,12 @@ code {
   overflow-x: auto;
 }
 
+.table-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0 0 8px;
+}
+
 table {
   width: 100%;
   min-width: 960px;

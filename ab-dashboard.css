@@ -523,6 +523,10 @@ code {
   margin-top: 18px;
 }
 
+.compact-block {
+  margin-top: 14px;
+}
+
 .filter-head {
   display: flex;
   justify-content: space-between;
@@ -545,6 +549,15 @@ code {
   color: var(--text);
   padding: 10px 14px;
   font-weight: 700;
+}
+
+.metric-visibility-pill {
+  transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease;
+}
+
+.metric-visibility-pill:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(29, 59, 79, 0.1);
 }
 
 .pill.selected.control {
@@ -819,6 +832,11 @@ th {
   display: grid;
   gap: 6px;
   margin-top: 10px;
+}
+
+.formula-helper-box {
+  border-style: dashed;
+  background: rgba(244, 250, 248, 0.9);
 }
 
 .inline-empty {

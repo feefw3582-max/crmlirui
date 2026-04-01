@@ -104,6 +104,8 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     breakdownFields: [],
     dimensionSelectedControls: [],
     dimensionSelectedExperiments: [],
+    hiddenSummaryMetrics: [],
+    hiddenDimensionMetrics: [],
     dimensionFilterFields: [],
     dimensionFilters: {},
     openDimensions: [],
@@ -876,6 +878,8 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       state.breakdownField = "";
       state.breakdownFields = [];
       state.dimensionFilterFields = [];
+      state.hiddenSummaryMetrics = [];
+      state.hiddenDimensionMetrics = [];
       state.dimensionFilters = {};
       state.openDimensions = [];
       state.hiddenSeries = [];
@@ -958,6 +962,12 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     }
 
     const nextMetricIds = schema.metrics.map(function (metric) { return metric.id; });
+    state.hiddenSummaryMetrics = state.hiddenSummaryMetrics.filter(function (metricId) {
+      return nextMetricIds.includes(metricId);
+    });
+    state.hiddenDimensionMetrics = state.hiddenDimensionMetrics.filter(function (metricId) {
+      return nextMetricIds.includes(metricId);
+    });
     if (!state.trendMetric || !nextMetricIds.includes(state.trendMetric)) {
       state.trendMetric = nextMetricIds[0] || "";
     }
@@ -1772,6 +1782,42 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       .replace(/'/g, "&#39;");
   }
 
+  function getVisibleMetrics(schema, hiddenMetricIds) {
+    const hiddenSet = new Set(hiddenMetricIds || []);
+    return schema.metrics.filter(function (metric) {
+      return !hiddenSet.has(metric.id);
+    });
+  }
+
+  function renderMetricVisibilityToolbar(schema, hiddenMetricIds, scopeKey, title) {
+    const visibleCount = getVisibleMetrics(schema, hiddenMetricIds).length;
+    return (
+      '<div class="filter-block compact-block"><div class="filter-head"><strong>' + escapeHtml(title) + '</strong><span class="muted">' +
+      escapeHtml(visibleCount ? ("当前显示 " + visibleCount + " 列") : "当前已隐藏全部统计列") +
+      '</span></div><div class="pill-row">' +
+      schema.metrics.map(function (metric) {
+        const hidden = (hiddenMetricIds || []).includes(metric.id);
+        return '<button type="button" class="pill metric-visibility-pill ' + (hidden ? "" : "selected control") + '" data-toggle-metric-visibility="' + escapeHtml(scopeKey) + '" data-metric-id="' + escapeHtml(metric.id) + '">' + escapeHtml(metric.label + (hidden ? " · 已隐藏" : " · 显示中")) + "</button>";
+      }).join("") +
+      "</div></div>"
+    );
+  }
+
+  function toggleMetricVisibility(scopeKey, metricId, schema) {
+    const stateKey = scopeKey === "dimension" ? "hiddenDimensionMetrics" : "hiddenSummaryMetrics";
+    const current = state[stateKey] || [];
+    if (current.includes(metricId)) {
+      state[stateKey] = current.filter(function (item) { return item !== metricId; });
+    } else {
+      state[stateKey] = current.concat(metricId);
+    }
+    const visibleMetrics = getVisibleMetrics(schema, state[stateKey]);
+    if (visibleMetrics.length && !visibleMetrics.some(function (metric) { return metric.id === state.tableSort.metricId; })) {
+      state.tableSort.metricId = visibleMetrics[0].id;
+      state.tableSort.direction = "desc";
+    }
+  }
+
   function render() {
     normalizeState();
     renderStatus();
@@ -2056,7 +2102,8 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       '<div class="panel-head"><div><p class="eyebrow">核心对比</p><h2>自动识别指标汇总表</h2><div class="subtitle">' +
       escapeHtml(subtitle) +
       '</div></div><div class="button-row"><span class="note">点击指标表头排序</span></div></div>' +
-      renderComparisonTable(schema, comparisonRows) +
+      renderMetricVisibilityToolbar(schema, state.hiddenSummaryMetrics, "summary", "核心对比列显示控制") +
+      renderComparisonTable(schema, comparisonRows, { hiddenMetricIds: state.hiddenSummaryMetrics }) +
       "</section>"
     );
   }
@@ -2145,6 +2192,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       '<button class="button-ghost" type="button" id="collapseAllDimensionsBtn">全部收起</button></div></div>' +
       renderBreakdownFieldBuilder(schema) +
       renderDimensionGroupEditor(scope) +
+      renderMetricVisibilityToolbar(schema, state.hiddenDimensionMetrics, "dimension", "属性拆解列显示控制") +
       '<div class="accordion-list">' +
       sections.map(function (section) {
         const key = section.key;
@@ -2155,7 +2203,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
           '<button class="accordion-trigger" type="button" data-toggle-dimension="' + escapeHtml(key) + '">' +
           '<div><strong>' + escapeHtml(section.label) + '</strong><div class="muted">' + (open ? "点击收起当前属性组合" : "点击展开当前属性组合") + "</div></div>" +
           "<strong>" + (open ? "−" : "+") + "</strong></button>" +
-          (open ? '<div class="accordion-body">' + renderComparisonTable(schema, section.rows) + "</div>" : "") +
+          (open ? '<div class="accordion-body">' + renderComparisonTable(schema, section.rows, { hiddenMetricIds: state.hiddenDimensionMetrics }) + "</div>" : "") +
           "</article>"
         );
       }).join("") +
@@ -2178,12 +2226,18 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     }).join(" ");
   }
 
-  function renderComparisonTable(schema, rows) {
+  function renderComparisonTable(schema, rows, options) {
     const sortedRows = sortComparisonRows(rows);
+    const hiddenMetricIds = options && options.hiddenMetricIds ? options.hiddenMetricIds : [];
+    const visibleMetrics = getVisibleMetrics(schema, hiddenMetricIds);
+
+    if (!visibleMetrics.length) {
+      return '<div class="empty inline-empty"><div><strong>当前已隐藏全部统计列</strong><p class="muted">点击上方列显示控制，重新打开你想看的指标列。</p></div></div>';
+    }
 
     return (
       '<div class="table-wrap"><table><thead><tr><th class="sticky-col">组别</th>' +
-      schema.metrics.map(function (metric) {
+      visibleMetrics.map(function (metric) {
         const active = state.tableSort.metricId === metric.id;
         const arrow = active ? (state.tableSort.direction === "desc" ? "↓" : "↑") : "↕";
         return '<th><button type="button" class="table-sort ' + (active ? "active" : "") + '" data-sort-metric="' + metric.id + '">' + escapeHtml(metric.label) + "<span>" + arrow + "</span></button></th>";
@@ -2194,7 +2248,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
           '<tr class="' + (row.hasData ? "" : "row-muted") + '"><td class="group-cell sticky-col"><strong>' + escapeHtml(row.label) + '</strong><span class="muted">' +
           escapeHtml(row.hasData ? (row.groupType === "control" ? "来源：" + row.sourceGroups.join("、") : "实验组单独展示") : "当前切片下暂无样本") +
           "</span></td>" +
-          schema.metrics.map(function (metric) {
+          visibleMetrics.map(function (metric) {
             const lift = row.lifts[metric.id];
             const liftClass = lift === null ? "base" : (lift >= 0 ? "positive" : "negative");
             return (
@@ -2873,6 +2927,15 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       });
     });
 
+    Array.prototype.forEach.call(document.querySelectorAll("[data-toggle-metric-visibility]"), function (button) {
+      button.addEventListener("click", function () {
+        const scopeKey = button.getAttribute("data-toggle-metric-visibility");
+        const metricId = button.getAttribute("data-metric-id");
+        toggleMetricVisibility(scopeKey, metricId, state.schema);
+        render();
+      });
+    });
+
     Array.prototype.forEach.call(document.querySelectorAll("[data-toggle-dimension-field]"), function (button) {
       button.addEventListener("click", function () {
         const fieldId = button.getAttribute("data-toggle-dimension-field");
@@ -3322,6 +3385,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     const formulaConfigs = getOrderedFormulaConfigs(schema);
     const presetConfigs = formulaConfigs.filter(function (config) { return Boolean(config.presetId); });
     const activeConfigs = formulaConfigs.filter(function (config) { return config.selected; });
+    const ratioFormula = "((本实验组该统计量 / 对照组该统计量) - 1) * 100";
 
     return (
       '<div class="filter-block formula-workbench"><div class="filter-head"><strong>缁熻閲忎笌鍏紡</strong><span class="muted">鍏堥€夎鐪嬬殑缁熻閲忥紝鍐嶄负瀹冮厤缃叕寮忋€傜己鍙橀噺鏃朵細鍦ㄥ崱鐗囧簳閮ㄧ敤绾㈣壊鎻愮ず銆?/span></div>' +
@@ -3337,11 +3401,33 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       '<div class="field-note"><strong>已识别底层指标：</strong> ' + escapeHtml(schema.baseMetrics.map(function (metric) { return metric.label; }).join(" / ")) + "</div>" +
       '<div class="field-note"><strong>已识别维度：</strong> ' + escapeHtml(schema.dimensionFields.length ? schema.dimensionFields.map(function (field) { return field.label; }).join(" / ") : "暂无") + "</div>" +
       "</div>" +
+      '<div class="formula-reference-box formula-helper-box">' +
+      '<div class="field-note"><strong>环比算法（实验组 vs 对照组）</strong></div>' +
+      '<div class="field-note">公式：((本实验组该统计量 / 对照组该统计量) - 1) * 100</div>' +
+      '<div class="field-note">展示口径：结果转成百分比，并保留小数点后两位。</div>' +
+      '<div class="field-note">当前表格里的 lift / 提升率就是按这个口径计算的。</div>' +
+      "</div>" +
+      '<div class="formula-reference-box formula-helper-box">' +
+      '<div class="field-note"><strong>环比算法（实验组 vs 对照组）</strong></div>' +
+      '<div class="field-note">公式：((本实验组该统计量 / 对照组该统计量) - 1) * 100</div>' +
+      '<div class="field-note">展示口径：结果转成百分比，并保留小数点后两位。</div>' +
+      '<div class="field-note">当前表格里的 lift / 提升率就是按这个口径计算的。</div>' +
+      "</div>" +
       (activeConfigs.length
         ? '<div class="formula-grid">' + activeConfigs.map(function (config) {
             return renderFormulaCard(config, schema);
           }).join("") + "</div>"
         : '<div class="empty inline-empty"><div><strong>杩樻病鏈夊惎鐢ㄧ粺璁￠噺</strong><p class="muted">鍙互鍏堢偣涓婇潰鐨勯缃寚鏍囷紝涔熷彲浠ユ柊澧炶嚜瀹氫箟缁熻閲忋€?/p></div></div>') +
+      '<div class="formula-reference-box formula-helper-box">' +
+      '<div class="field-note"><strong>环比算法（实验组 vs 对照组）：</strong>' + escapeHtml(ratioFormula) + "</div>" +
+      '<div class="field-note"><strong>展示格式：</strong>结果转成百分比，并保留小数点后两位。</div>' +
+      '<div class="field-note"><strong>适用场景：</strong>用于看实验组相对对照组的变化幅度，和表格里的提升率口径一致。</div>' +
+      "</div>" +
+      '<div class="formula-reference-box formula-helper-box">' +
+      '<div class="field-note"><strong>环比算法（实验组 vs 对照组）：</strong>' + escapeHtml(ratioFormula) + "</div>" +
+      '<div class="field-note"><strong>展示格式：</strong>结果转成百分比，并保留小数点后两位。</div>' +
+      '<div class="field-note"><strong>适用场景：</strong>用于看实验组相对对照组的变化幅度，和表格里的提升率口径一致。</div>' +
+      "</div>" +
       '<div class="button-row" style="margin-top:10px;"><button type="button" class="button-ghost" id="applyFormulaBtn">搴旂敤缁熻閲忛厤缃?/button></div></div>'
     );
   }
@@ -3481,6 +3567,16 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
             return renderFormulaCard(config, schema);
           }).join("") + "</div>"
         : '<div class="empty inline-empty"><div><strong>还没有启用统计量</strong><p class="muted">可以先点上面的预置指标，也可以新增一个自定义统计量。</p></div></div>') +
+      '<div class="formula-reference-box formula-helper-box">' +
+      '<div class="field-note"><strong>环比算法（实验组 vs 对照组）：</strong>' + escapeHtml(ratioFormula) + "</div>" +
+      '<div class="field-note"><strong>展示格式：</strong>结果转成百分比，并保留小数点后两位。</div>' +
+      '<div class="field-note"><strong>适用场景：</strong>用于看实验组相对对照组的变化幅度，和表格里的提升率口径一致。</div>' +
+      "</div>" +
+      '<div class="formula-reference-box formula-helper-box">' +
+      '<div class="field-note"><strong>环比算法（实验组 vs 对照组）：</strong>' + escapeHtml(ratioFormula) + "</div>" +
+      '<div class="field-note"><strong>展示格式：</strong>结果转成百分比，并保留小数点后两位。</div>' +
+      '<div class="field-note"><strong>适用场景：</strong>用于看实验组相对对照组的变化幅度，和表格里的提升率口径一致。</div>' +
+      "</div>" +
       '<div class="button-row" style="margin-top:10px;"><button type="button" class="button-ghost" id="applyFormulaBtn">应用统计量配置</button></div></div>'
     );
   }
@@ -4106,6 +4202,40 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       x: cx + radius * Math.cos(angleInRadians - Math.PI / 2),
       y: cy + radius * Math.sin(angleInRadians - Math.PI / 2)
     };
+  }
+
+  function renderFormulaEditor(schema) {
+    const formulaConfigs = getOrderedFormulaConfigs(schema);
+    const presetConfigs = formulaConfigs.filter(function (config) { return Boolean(config.presetId); });
+    const activeConfigs = formulaConfigs.filter(function (config) { return config.selected; });
+    const ratioFormula = "((本实验组该统计量 / 对照组该统计量) - 1) * 100";
+
+    return (
+      '<div class="filter-block formula-workbench"><div class="filter-head"><strong>统计量与公式</strong><span class="muted">先选择要展示的统计量，再为它配置公式。缺少变量时会在卡片底部直接提醒。</span></div>' +
+      '<div class="formula-toolbar">' +
+      '<div class="formula-preset-row">' +
+      presetConfigs.map(function (config) {
+        return renderFormulaPresetPill(config);
+      }).join("") +
+      "</div>" +
+      '<div class="button-row"><button type="button" class="button-ghost" id="addCustomMetricBtn">新增自定义统计量</button></div>' +
+      "</div>" +
+      '<div class="formula-reference-box">' +
+      '<div class="field-note"><strong>已识别底层指标：</strong> ' + escapeHtml(schema.baseMetrics.map(function (metric) { return metric.label; }).join(" / ")) + "</div>" +
+      '<div class="field-note"><strong>已识别维度：</strong> ' + escapeHtml(schema.dimensionFields.length ? schema.dimensionFields.map(function (field) { return field.label; }).join(" / ") : "暂无") + "</div>" +
+      "</div>" +
+      (activeConfigs.length
+        ? '<div class="formula-grid">' + activeConfigs.map(function (config) {
+            return renderFormulaCard(config, schema);
+          }).join("") + "</div>"
+        : '<div class="empty inline-empty"><div><strong>还没有启用统计量</strong><p class="muted">可以先点上面的预置指标，也可以新增一个自定义统计量。</p></div></div>') +
+      '<div class="formula-reference-box formula-helper-box">' +
+      '<div class="field-note"><strong>环比算法（实验组 vs 对照组）：</strong>' + escapeHtml(ratioFormula) + "</div>" +
+      '<div class="field-note"><strong>展示格式：</strong>结果转成百分比，并保留小数点后两位。</div>' +
+      '<div class="field-note"><strong>适用场景：</strong>用于看实验组相对对照组的变化幅度，和表格里的提升率口径一致。</div>' +
+      "</div>" +
+      '<div class="button-row" style="margin-top:10px;"><button type="button" class="button-ghost" id="applyFormulaBtn">应用统计量配置</button></div></div>'
+    );
   }
 
   if (typeof window !== "undefined") {

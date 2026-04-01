@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AB 实验可视化看板</title>
+    <link rel="stylesheet" href="./ab-dashboard.css" />
+  </head>
+  <body>
+    <div class="app" id="appRoot">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">AB Experiment Visualization Agent</p>
+          <h1>上传底表后，直接拿到可筛选、可截图的实验汇报页</h1>
+          <p class="subtitle">
+            这个页面是独立可用版，不依赖构建工具。你可以直接上传 Excel/CSV，也可以先用内置示例数据看看效果。
+          </p>
+        </div>
+        <div class="actions">
+          <label class="button">
+            上传 Excel / CSV
+            <input id="fileInput" type="file" accept=".csv,.xlsx,.xls" hidden />
+          </label>
+          <button class="button-ghost" id="loadSampleBtn" type="button">加载示例数据</button>
+          <button class="button-ghost" id="exportPageBtn" type="button">导出整页截图</button>
+        </div>
+      </header>
+
+      <section class="status-grid" id="statusGrid"></section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">上传与说明</p>
+            <h2>数据输入方式</h2>
+          </div>
+          <div class="button-row">
+            <button class="button-ghost" id="exportSummaryBtn" type="button">导出汇总表</button>
+            <button class="button-ghost" id="exportTrendBtn" type="button">导出趋势图</button>
+          </div>
+        </div>
+
+        <div class="info-grid">
+          <div class="info-card">
+            <strong>推荐流程</strong>
+            <div class="muted">先直接上传蓝金导出的底表；如果只是先体验页面，可点“加载示例数据”。</div>
+          </div>
+          <div class="info-card">
+            <strong>自动识别</strong>
+            <div class="muted">
+              不要求你手动改列名。页面会自动推断实验 ID、日期、AB 分组、属性维度和统计指标，
+              像 <code>grade</code>、<code>subject</code>、<code>revenue</code>、
+              <code>DAU</code>、<code>ARPU</code>、<code>GMV</code>、<code>转化率</code>
+              这类字段都支持直接识别或自动派生。
+            </div>
+          </div>
+          <div class="info-card">
+            <strong>计算规则</strong>
+            <div class="muted">多对照组先聚合基础指标再平均，转化率和 ARPU 全部重算，不直接平均复合指标。</div>
+          </div>
+        </div>
+
+        <div id="messageArea"></div>
+      </section>
+
+      <div id="dashboardArea"></div>
+
+      <footer class="footer panel footer-panel">
+        <span>当前版本覆盖：上传、实验筛选、对照组聚合、汇总表、趋势图、分维度折叠、截图导出。</span>
+        <span id="footerMeta">等待数据载入</span>
+      </footer>
+    </div>
+
+    <script>
+      (function () {
+        const scriptQueue = [
+          ["./xlsx.full.min.js", "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"],
+          ["./html2canvas.min.js", "https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"],
+          ["./ab-dashboard.js"]
+        ];
+
+        function loadScript(url) {
+          return new Promise(function (resolve, reject) {
+            const script = document.createElement("script");
+            script.src = url;
+            script.onload = resolve;
+            script.onerror = reject;
+            document.body.appendChild(script);
+          });
+        }
+
+        scriptQueue.reduce(function (chain, candidates) {
+          return chain.then(function () {
+            if (Array.isArray(candidates) && candidates.length > 1) {
+              return loadScript(candidates[0]).catch(function () {
+                return loadScript(candidates[1]);
+              });
+            }
+            return loadScript(Array.isArray(candidates) ? candidates[0] : candidates);
+          });
+        }, Promise.resolve()).catch(function () {
+          const messageArea = document.getElementById("messageArea");
+          if (messageArea) {
+            messageArea.innerHTML =
+              '<div class="message error"><strong>资源加载失败</strong><div>图表依赖没有成功加载。请检查网络，或把 `xlsx.full.min.js` 和 `html2canvas.min.js` 放在页面同级目录后再刷新。</div></div>';
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>

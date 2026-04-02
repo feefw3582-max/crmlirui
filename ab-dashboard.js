@@ -101,6 +101,8 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     trendMetric: "",
     tableSort: { metricId: "", direction: "desc" },
     showLiftBadges: true,
+    hiddenLiftRows: [],
+    hiddenLiftColumns: [],
     breakdownField: "",
     breakdownFields: [],
     dimensionSelectedControls: [],
@@ -162,6 +164,8 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       state.dimensionFilters = {};
       state.dimensionFilterFields = [];
       state.trendZoomScale = 1;
+      state.hiddenLiftRows = [];
+      state.hiddenLiftColumns = [];
       rebuildFromRawRows();
       state.fileName = file.name;
       state.sourceLabel = sourceLabel;
@@ -1601,11 +1605,12 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
   }
 
   function buildFallbackYAxisTickValues(values, domain) {
+    const tickCount = Math.max(2, arguments.length > 2 && Number.isFinite(arguments[2]) ? Math.round(arguments[2]) : 5);
     const min = Number.isFinite(domain && domain[0]) ? domain[0] : (values.length ? values[0] : 0);
     const max = Number.isFinite(domain && domain[1]) ? domain[1] : (values.length ? values[values.length - 1] : 1);
     const safeMax = max === min ? min + 1 : max;
-    return Array.from({ length: 5 }, function (_, index) {
-      return Number((min + ((safeMax - min) * index) / 4).toFixed(6));
+    return Array.from({ length: tickCount }, function (_, index) {
+      return Number((min + ((safeMax - min) * index) / (tickCount - 1)).toFixed(6));
     });
   }
 
@@ -1615,14 +1620,15 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     return padding.top + innerHeight - ratio * innerHeight;
   }
 
-  function buildTrendYAxisTicks(domain, values, padding, innerHeight) {
+  function buildTrendYAxisTicks(domain, values, padding, innerHeight, tickCount) {
     const minY = domain[0];
     const maxY = domain[1];
     const safeSpan = maxY - minY || 1;
+    const resolvedTickCount = Math.max(2, Number.isFinite(tickCount) ? Math.round(tickCount) : 5);
     const tickValues = shouldUseFallbackYAxisTicks(values)
-      ? buildFallbackYAxisTickValues(values, domain)
-      : Array.from({ length: 5 }, function (_, index) {
-          const ratio = index / 4;
+      ? buildFallbackYAxisTickValues(values, domain, resolvedTickCount)
+      : Array.from({ length: resolvedTickCount }, function (_, index) {
+          const ratio = index / (resolvedTickCount - 1);
           return maxY - safeSpan * ratio;
         });
     return tickValues.map(function (value) {
@@ -1631,6 +1637,16 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
         y: projectTrendY(value, minY, maxY, padding, innerHeight)
       };
     });
+  }
+
+  function computeTrendLineInnerHeight(scale) {
+    const baseInnerHeight = 302;
+    const safeScale = clampTrendZoomScale(scale);
+    return Math.max(36, Math.round(baseInnerHeight * safeScale));
+  }
+
+  function computeTrendLineTickCount(innerHeight) {
+    return Math.max(5, Math.min(20, Math.round(innerHeight / 80)));
   }
 
   function formatAxisMetricValue(metric, value) {
@@ -1873,6 +1889,49 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       state.tableSort.metricId = visibleMetrics[0].id;
       state.tableSort.direction = "desc";
     }
+  }
+
+  function getLiftRowToggleKey(tableId, rowKey) {
+    return String(tableId || "") + "::row::" + String(rowKey || "");
+  }
+
+  function getLiftColumnToggleKey(tableId, metricId) {
+    return String(tableId || "") + "::metric::" + String(metricId || "");
+  }
+
+  function isLiftRowVisible(tableId, rowKey) {
+    return !state.hiddenLiftRows.includes(getLiftRowToggleKey(tableId, rowKey));
+  }
+
+  function isLiftColumnVisible(tableId, metricId) {
+    return !state.hiddenLiftColumns.includes(getLiftColumnToggleKey(tableId, metricId));
+  }
+
+  function toggleLiftRowVisibility(tableId, rowKey) {
+    const key = getLiftRowToggleKey(tableId, rowKey);
+    if (state.hiddenLiftRows.includes(key)) {
+      state.hiddenLiftRows = state.hiddenLiftRows.filter(function (item) { return item !== key; });
+    } else {
+      state.hiddenLiftRows = state.hiddenLiftRows.concat(key);
+    }
+  }
+
+  function toggleLiftColumnVisibility(tableId, metricId) {
+    const key = getLiftColumnToggleKey(tableId, metricId);
+    if (state.hiddenLiftColumns.includes(key)) {
+      state.hiddenLiftColumns = state.hiddenLiftColumns.filter(function (item) { return item !== key; });
+    } else {
+      state.hiddenLiftColumns = state.hiddenLiftColumns.concat(key);
+    }
+  }
+
+  function shouldShowLiftBadge(tableId, rowKey, metricId, secondaryInfo) {
+    return Boolean(
+      state.showLiftBadges &&
+      secondaryInfo &&
+      isLiftRowVisible(tableId, rowKey) &&
+      isLiftColumnVisible(tableId, metricId)
+    );
   }
 
   function render() {
@@ -2307,19 +2366,21 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
 
     return (
       '<div class="table-toolbar"><div class="table-toolbar-actions">' +
-      '<button type="button" class="button-ghost mini' + (state.showLiftBadges ? " active" : "") + '" data-toggle-lift-visibility="true">' + (state.showLiftBadges ? "隐藏涨幅比" : "显示涨幅比") + "</button>" +
+      '<button type="button" class="button-ghost mini' + (state.showLiftBadges ? " active" : "") + '" data-toggle-lift-visibility="true">' + (state.showLiftBadges ? "全部隐藏涨幅比" : "全部显示涨幅比") + "</button>" +
       '<button type="button" class="button-ghost mini" data-export-table="' + escapeHtml(tableId) + '" data-export-file="' + escapeHtml(exportFileName) + '" data-export-title="' + escapeHtml(exportTitle) + '">导出 PDF</button>' +
       "</div></div>" +
       '<div class="table-wrap"><table id="' + escapeHtml(tableId) + '"><thead><tr><th class="sticky-col">组别</th>' +
       visibleMetrics.map(function (metric) {
         const active = state.tableSort.metricId === metric.id;
         const arrow = active ? (state.tableSort.direction === "desc" ? "↓" : "↑") : "↕";
-        return '<th><button type="button" class="table-sort ' + (active ? "active" : "") + '" data-sort-metric="' + metric.id + '">' + escapeHtml(getMetricDisplayLabel(metric)) + "<span>" + arrow + "</span></button></th>";
+        const liftVisible = isLiftColumnVisible(tableId, metric.id);
+        return '<th><div class="metric-head"><button type="button" class="table-sort ' + (active ? "active" : "") + '" data-sort-metric="' + metric.id + '">' + escapeHtml(getMetricDisplayLabel(metric)) + "<span>" + arrow + '</span></button><button type="button" class="cell-lift-toggle ' + (liftVisible ? "active" : "off") + '" data-toggle-lift-column="' + escapeHtml(metric.id) + '" data-table-id="' + escapeHtml(tableId) + '" title="' + (liftVisible ? "隐藏这一列的涨幅比" : "显示这一列的涨幅比") + '">涨幅</button></div></th>';
       }).join("") +
       "</tr></thead><tbody>" +
       sortedRows.map(function (row) {
+        const rowLiftVisible = isLiftRowVisible(tableId, row.key);
         return (
-          '<tr class="' + (row.hasData ? "" : "row-muted") + '"><td class="group-cell sticky-col"><strong>' + escapeHtml(row.label) + '</strong><span class="muted">' +
+          '<tr class="' + (row.hasData ? "" : "row-muted") + '"><td class="group-cell sticky-col"><div class="group-cell-head"><strong>' + escapeHtml(row.label) + '</strong><button type="button" class="cell-lift-toggle ' + (rowLiftVisible ? "active" : "off") + '" data-toggle-lift-row="' + escapeHtml(row.key) + '" data-table-id="' + escapeHtml(tableId) + '" title="' + (rowLiftVisible ? "隐藏这一行的涨幅比" : "显示这一行的涨幅比") + '">涨幅</button></div><span class="muted">' +
           escapeHtml(row.hasData ? (row.groupType === "control" ? "来源：" + row.sourceGroups.join("、") : "实验组单独展示") : "当前切片下暂无样本") +
           "</span></td>" +
           visibleMetrics.map(function (metric) {
@@ -2327,7 +2388,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
             const secondaryInfo = getComparisonMetricSecondaryInfo(metric, row);
             return (
               "<td><span class=\"metric-main\">" + escapeHtml(isCompareToControlMetric(metric) && row.groupType === "experiment" ? formatCompareMetric(mainValue) : formatMetric(metric, mainValue)) + '</span>' +
-              (state.showLiftBadges && secondaryInfo ? '<span class="lift ' + secondaryInfo.className + '">' + escapeHtml(secondaryInfo.text) + "</span>" : "") +
+              (shouldShowLiftBadge(tableId, row.key, metric.id, secondaryInfo) ? '<span class="lift ' + secondaryInfo.className + '">' + escapeHtml(secondaryInfo.text) + "</span>" : "") +
               "</td>"
             );
           }).join("") +
@@ -2832,7 +2893,9 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     if (hintNode) {
       hintNode.textContent = state.trendChartType === "pie"
         ? "饼图模式下不应用 Y 轴倍数"
-        : "中点为 ×1，向右放大，向左缩小";
+        : (state.trendChartType === "line"
+          ? "中点为 ×1；折线图会保持上下刻度不变，只拉伸图高与刻度"
+          : "中点为 ×1，向右放大，向左缩小");
     }
   }
 
@@ -3009,6 +3072,20 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     Array.prototype.forEach.call(document.querySelectorAll("[data-toggle-lift-visibility]"), function (button) {
       button.addEventListener("click", function () {
         state.showLiftBadges = !state.showLiftBadges;
+        render();
+      });
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll("[data-toggle-lift-row]"), function (button) {
+      button.addEventListener("click", function () {
+        toggleLiftRowVisibility(button.getAttribute("data-table-id"), button.getAttribute("data-toggle-lift-row"));
+        render();
+      });
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll("[data-toggle-lift-column]"), function (button) {
+      button.addEventListener("click", function () {
+        toggleLiftColumnVisibility(button.getAttribute("data-table-id"), button.getAttribute("data-toggle-lift-column"));
         render();
       });
     });
@@ -4086,19 +4163,16 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
   function renderTrendLineSvg(schema, trendBundle, visibleSeriesKeys, metric) {
     const data = trendBundle.data;
     const width = 960;
-    const height = 360;
     const padding = { top: 16, right: 18, bottom: 42, left: 68 };
+    const innerHeight = computeTrendLineInnerHeight(state.trendZoomScale);
+    const height = padding.top + padding.bottom + innerHeight;
     const innerWidth = width - padding.left - padding.right;
-    const innerHeight = height - padding.top - padding.bottom;
     const values = collectTrendMetricValues(data, visibleSeriesKeys, state.trendMetric);
-    const domain = computeScaledTrendDomain(
-      computeYAxisDomain(data, visibleSeriesKeys, state.trendMetric),
-      state.trendZoomScale
-    );
+    const domain = computeYAxisDomain(data, visibleSeriesKeys, state.trendMetric);
     const minY = domain[0];
     const maxY = domain[1];
     const xStep = data.length > 1 ? innerWidth / (data.length - 1) : innerWidth / 2;
-    const yTicks = buildTrendYAxisTicks(domain, values, padding, innerHeight);
+    const yTicks = buildTrendYAxisTicks(domain, values, padding, innerHeight, computeTrendLineTickCount(innerHeight));
     const gridLines = renderTrendYAxisGrid(yTicks, metric, padding.left, width - padding.right);
     const xLabels = renderTrendXAxisLabels(data, trendBundle.xFieldId, height, padding, xStep, 0);
 
@@ -4158,7 +4232,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       seriesPaths +
       empty +
       "</svg>" +
-      '<div class="chart-meta"><span>图表：折线图 / X 轴：' + escapeHtml(getTrendXAxisLabel(schema, trendBundle.xFieldId)) + ' / Y 轴：' + escapeHtml(metric ? getMetricDisplayLabel(metric) : "") + '</span><span>当数值全为 0 或 1，或几乎没有跨度时，会自动改用兜底刻度。</span></div>'
+      '<div class="chart-meta"><span>图表：折线图 / X 轴：' + escapeHtml(getTrendXAxisLabel(schema, trendBundle.xFieldId)) + ' / Y 轴：' + escapeHtml(metric ? getMetricDisplayLabel(metric) : "") + '</span><span>滑动倍数会拉伸折线图高度与刻度密度，但不会改动当前最小值和最大值。</span></div>'
     );
   }
 

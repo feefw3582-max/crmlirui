@@ -578,6 +578,19 @@ code {
   margin: 0 0 8px;
 }
 
+.table-toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.button-ghost.active {
+  background: rgba(29, 59, 79, 0.12);
+  border-color: rgba(29, 59, 79, 0.24);
+  color: var(--brand);
+}
+
 table {
   width: 100%;
   min-width: 960px;

@@ -100,6 +100,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     trendZoomScale: 1,
     trendMetric: "",
     tableSort: { metricId: "", direction: "desc" },
+    showLiftBadges: true,
     breakdownField: "",
     breakdownFields: [],
     dimensionSelectedControls: [],
@@ -2305,7 +2306,10 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     }
 
     return (
-      '<div class="table-toolbar"><button type="button" class="button-ghost mini" data-export-table="' + escapeHtml(tableId) + '" data-export-file="' + escapeHtml(exportFileName) + '" data-export-title="' + escapeHtml(exportTitle) + '">导出 PDF</button></div>' +
+      '<div class="table-toolbar"><div class="table-toolbar-actions">' +
+      '<button type="button" class="button-ghost mini' + (state.showLiftBadges ? " active" : "") + '" data-toggle-lift-visibility="true">' + (state.showLiftBadges ? "隐藏涨幅比" : "显示涨幅比") + "</button>" +
+      '<button type="button" class="button-ghost mini" data-export-table="' + escapeHtml(tableId) + '" data-export-file="' + escapeHtml(exportFileName) + '" data-export-title="' + escapeHtml(exportTitle) + '">导出 PDF</button>' +
+      "</div></div>" +
       '<div class="table-wrap"><table id="' + escapeHtml(tableId) + '"><thead><tr><th class="sticky-col">组别</th>' +
       visibleMetrics.map(function (metric) {
         const active = state.tableSort.metricId === metric.id;
@@ -2323,7 +2327,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
             const secondaryInfo = getComparisonMetricSecondaryInfo(metric, row);
             return (
               "<td><span class=\"metric-main\">" + escapeHtml(isCompareToControlMetric(metric) && row.groupType === "experiment" ? formatCompareMetric(mainValue) : formatMetric(metric, mainValue)) + '</span>' +
-              (secondaryInfo ? '<span class="lift ' + secondaryInfo.className + '">' + escapeHtml(secondaryInfo.text) + "</span>" : "") +
+              (state.showLiftBadges && secondaryInfo ? '<span class="lift ' + secondaryInfo.className + '">' + escapeHtml(secondaryInfo.text) + "</span>" : "") +
               "</td>"
             );
           }).join("") +
@@ -2998,6 +3002,13 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
           state.tableSort.metricId = metricId;
           state.tableSort.direction = "desc";
         }
+        render();
+      });
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll("[data-toggle-lift-visibility]"), function (button) {
+      button.addEventListener("click", function () {
+        state.showLiftBadges = !state.showLiftBadges;
         render();
       });
     });

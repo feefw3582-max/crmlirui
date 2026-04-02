@@ -21,6 +21,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
   const GROUP_TYPE_HEADER_HINTS = /(grouptype|varianttype|类型|组类型|实验类型)/i;
   const ID_HEADER_HINTS = /(id|编号|编码|code|序号|no)$/i;
   const PERCENT_HEADER_HINTS = /(rate|ratio|ctr|cvr|roi|pct|percent|share|转化率|点击率|留存率|渗透率|占比|比率|比例|比值|率)/i;
+  const PERCENT_RATIO_MULTIPLIER_HINTS = /(rate|ratio|ctr|cvr|roi|pct|percent|share|转化率|点击率|留存率|渗透率)/i;
   const METRIC_HEADER_HINTS = /(uv|dau|wau|mau|pv|gmv|revenue|income|sales|cost|profit|amount|amt|value|click|tap|hit|impression|show|view|exposure|order|pay|ctr|cvr|cv|arpu|arppu|retention|visitor|visitors|user|users|traffic|active|留存|转化|点击|曝光|展示|浏览|收入|收益|订单|成交|金额|成本|利润|人数|用户|活跃)/i;
   const DIMENSION_HEADER_HINTS = /(grade|subject|channel|city|province|region|country|gender|school|stage|class|product|sku|category|crowd|segment|source|terminal|device|network|scene|teacher|年级|学科|渠道|城市|省份|地区|国家|性别|学校|学段|班型|品类|商品|人群|来源|终端|设备|场景|老师)/i;
 
@@ -478,7 +479,11 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
   }
 
   function detectPercentMultiplier(column) {
-    return column.mostlyRatioValues ? 100 : 1;
+    if (!column) return 1;
+    if ((column.sampleValues || []).some(function (value) { return /%/.test(String(value)); })) {
+      return 1;
+    }
+    return column.mostlyRatioValues && PERCENT_RATIO_MULTIPLIER_HINTS.test(column.normalized) ? 100 : 1;
   }
 
   function isPercentMetricColumn(column) {

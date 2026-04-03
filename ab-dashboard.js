@@ -65,7 +65,9 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
   const SERIES_COLORS = ["#213547", "#0f9d8a", "#e85d4d", "#ff9f1c", "#1d4ed8", "#b83280", "#2f855a", "#6f42c1"];
   const collator = new Intl.Collator("zh-CN", { numeric: true, sensitivity: "base" });
   const numberFormatter = new Intl.NumberFormat("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const numberFormatter3 = new Intl.NumberFormat("zh-CN", { minimumFractionDigits: 3, maximumFractionDigits: 3 });
   const percentFormatter = new Intl.NumberFormat("zh-CN", { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+  const percentFormatter3 = new Intl.NumberFormat("zh-CN", { minimumFractionDigits: 3, maximumFractionDigits: 3 });
   const integerFormatter = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 });
   const DEFAULT_AUTO_VISIBLE_METRIC_HINTS = /(uv|dau|gmv|arpu|arppu|conversion|cvr|转|杞寲)/i;
 
@@ -113,6 +115,9 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     dimensionSelectedExperiments: [],
     hiddenSummaryMetrics: [],
     hiddenDimensionMetrics: [],
+    dimensionBoardMetricIds: [],
+    dimensionBoardMode: "total",
+    dimensionBoardDragMetricId: "",
     metricOrder: [],
     metricVisibilitySignature: "",
     dimensionFilterFields: [],
@@ -1156,6 +1161,9 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       state.dimensionFilterFields = [];
       state.hiddenSummaryMetrics = [];
       state.hiddenDimensionMetrics = [];
+      state.dimensionBoardMetricIds = [];
+      state.dimensionBoardMode = "total";
+      state.dimensionBoardDragMetricId = "";
       state.metricOrder = [];
       state.metricVisibilitySignature = "";
       state.dimensionFilters = {};
@@ -1266,6 +1274,12 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       state.hiddenDimensionMetrics = state.hiddenDimensionMetrics.filter(function (metricId) {
         return nextMetricIds.includes(metricId);
       });
+    }
+    state.dimensionBoardMetricIds = (state.dimensionBoardMetricIds || []).filter(function (metricId, index, array) {
+      return array.indexOf(metricId) === index && nextMetricIds.includes(metricId);
+    });
+    if (!["total", "row"].includes(state.dimensionBoardMode)) {
+      state.dimensionBoardMode = "total";
     }
     if (!state.trendMetric || !nextMetricIds.includes(state.trendMetric)) {
       state.trendMetric = nextMetricIds[0] || "";
@@ -1825,11 +1839,14 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
 
     return Object.keys(sectionMap).sort(collator.compare).map(function (sectionKey) {
       const section = sectionMap[sectionKey];
+      const sourceRows = section.rows.slice();
       return {
         key: section.key,
         label: section.label,
+        parts: section.parts,
+        sourceRows: sourceRows,
         rows: buildComparisonRows({
-          rows: section.rows,
+          rows: sourceRows,
           selectedControls: options.selectedControls,
           selectedExperiments: options.selectedExperiments,
           caliber: options.caliber,
@@ -2123,7 +2140,9 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       ? (roundToInteger ? integerFormatter.format(Math.round(normalizedValue)) : percentFormatter.format(normalizedValue))
       : (roundToInteger
         ? integerFormatter.format(Math.round(normalizedValue))
-        : (Number.isInteger(normalizedValue) ? integerFormatter.format(normalizedValue) : numberFormatter.format(normalizedValue)));
+        : (Number.isInteger(normalizedValue)
+          ? integerFormatter.format(normalizedValue)
+          : (isArpuMetric(metric) ? numberFormatter3.format(normalizedValue) : numberFormatter.format(normalizedValue))));
     return usePercent ? formatted + "%" : formatted;
   }
 
@@ -2245,6 +2264,17 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     return String(value).padStart(2, "0");
   }
 
+  function isArpuMetric(metric) {
+    if (!metric) return false;
+    const normalized = normalizeHeader([metric.id, metric.label, metric.normalized, metric.concept].filter(Boolean).join(" "));
+    return normalized.includes("arpu") && !normalized.includes("arppu");
+  }
+
+  function formatDimensionBoardPercent(value) {
+    if (!Number.isFinite(value)) return "--";
+    return percentFormatter3.format(value) + "%";
+  }
+
   function formatMetric(metric, value) {
     if (value === null || value === undefined || Number.isNaN(value)) return "--";
     const roundToInteger = Boolean(metric && metric.roundToInteger);
@@ -2257,7 +2287,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     }
     return roundToInteger
       ? integerFormatter.format(Math.round(value))
-      : numberFormatter.format(value);
+      : (isArpuMetric(metric) ? numberFormatter3.format(value) : numberFormatter.format(value));
   }
 
   function formatLift(value) {
@@ -2882,6 +2912,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       renderBreakdownFieldBuilder(schema) +
       renderDimensionGroupEditor(scope) +
       renderMetricVisibilityToolbar(schema, state.hiddenSummaryMetrics, "dimension", "属性拆解列显示控制") +
+      renderDimensionBoardPanel(schema, sections) +
       '<div class="accordion-list">' +
       sections.map(function (section) {
         const key = section.key;
@@ -2902,6 +2933,103 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
         );
       }).join("") +
       "</div></section>"
+    );
+  }
+
+  function getDimensionBoardMetrics(schema) {
+    const metricMap = new Map((schema.metrics || []).map(function (metric) {
+      return [metric.id, metric];
+    }));
+    return (state.dimensionBoardMetricIds || []).map(function (metricId) {
+      return metricMap.get(metricId);
+    }).filter(Boolean);
+  }
+
+  function buildDimensionBoardRows(schema, sections) {
+    const selectedGroups = new Set((state.dimensionSelectedControls || []).concat(state.dimensionSelectedExperiments || []));
+    const selectedDays = schema.dateField
+      ? countDaysInclusive(state.dateRange.start, state.dateRange.end)
+      : 1;
+    return (sections || []).map(function (section) {
+      const sourceRows = (section.sourceRows || []).filter(function (row) {
+        return !selectedGroups.size || selectedGroups.has(row.groupName);
+      });
+      if (!sourceRows.length) return null;
+      const baseBundle = applyCaliber(aggregateRows(sourceRows, schema), state.caliber, selectedDays);
+      if (!baseBundle.hasData) return null;
+      return {
+        key: section.key,
+        label: section.label,
+        values: computeMetricValues(schema, baseBundle, sourceRows)
+      };
+    }).filter(Boolean);
+  }
+
+  function renderDimensionBoardPanel(schema, sections) {
+    const selectedMetrics = getDimensionBoardMetrics(schema);
+    const boardRows = buildDimensionBoardRows(schema, sections);
+    const mode = state.dimensionBoardMode === "row" ? "row" : "total";
+    return (
+      '<div class="filter-block dimension-board-block"><div class="filter-head"><strong>维度大盘表</strong><span class="muted">把上面的列名拖进框里做大盘列（复制行为，不影响外部列显示和排序）</span></div>' +
+      '<div class="dimension-board-toolbar">' +
+      '<div class="dimension-board-dropzone' + (selectedMetrics.length ? " has-metrics" : "") + '" data-dimension-board-dropzone="true">' +
+      (selectedMetrics.length
+        ? selectedMetrics.map(function (metric) {
+            return '<div class="dimension-board-token" draggable="true" data-dimension-board-metric-id="' + escapeHtml(metric.id) + '"><span>' + escapeHtml(getMetricDisplayLabel(metric)) + '</span><button type="button" class="dimension-board-remove" data-dimension-board-remove="' + escapeHtml(metric.id) + '" aria-label="remove ' + escapeHtml(metric.id) + '">x</button></div>';
+          }).join("")
+        : '<span class="muted">拖拽“属性拆解列显示控制”中的列按钮到这里</span>') +
+      "</div>" +
+      '<div class="button-row"><button type="button" class="button-ghost mini' + (mode === "total" ? " active" : "") + '" data-dimension-board-mode="total">总大盘</button><button type="button" class="button-ghost mini' + (mode === "row" ? " active" : "") + '" data-dimension-board-mode="row">行大盘</button></div>' +
+      "</div>" +
+      renderDimensionBoardTable(selectedMetrics, boardRows, mode) +
+      "</div>"
+    );
+  }
+
+  function renderDimensionBoardTable(metrics, rows, mode) {
+    if (!metrics.length) {
+      return '<div class="empty inline-empty"><div><strong>先拖入要分析的列</strong><p class="muted">可拖入多个列，拖入后会按当前维度组合生成百分比分布大盘。</p></div></div>';
+    }
+    if (!rows.length) {
+      return '<div class="empty inline-empty"><div><strong>当前维度下暂无可计算数据</strong><p class="muted">可调整日期、组别或维度筛选后重试。</p></div></div>';
+    }
+
+    const sortedRows = rows.slice().sort(function (left, right) {
+      return collator.compare(left.label, right.label);
+    });
+    const totalDenominator = sortedRows.reduce(function (sum, row) {
+      return sum + metrics.reduce(function (metricSum, metric) {
+        const value = row.values[metric.id];
+        return metricSum + (Number.isFinite(value) ? value : 0);
+      }, 0);
+    }, 0);
+
+    return (
+      '<div class="table-wrap"><table class="dimension-board-table"><thead><tr><th class="sticky-col">维度组合</th>' +
+      metrics.map(function (metric) {
+        return '<th>' + escapeHtml(getMetricDisplayLabel(metric)) + "</th>";
+      }).join("") +
+      "</tr></thead><tbody>" +
+      sortedRows.map(function (row) {
+        const rowDenominator = metrics.reduce(function (sum, metric) {
+          const value = row.values[metric.id];
+          return sum + (Number.isFinite(value) ? value : 0);
+        }, 0);
+        return (
+          '<tr><td class="sticky-col dimension-board-row-label">' + escapeHtml(row.label) + "</td>" +
+          metrics.map(function (metric) {
+            const rawValue = Number.isFinite(row.values[metric.id]) ? row.values[metric.id] : 0;
+            const denominator = mode === "row" ? rowDenominator : totalDenominator;
+            const ratio = Number.isFinite(denominator) && denominator !== 0
+              ? (rawValue / denominator) * 100
+              : null;
+            return '<td class="dimension-board-value ' + (ratio != null && ratio < 0 ? "negative" : "positive") + '">' + escapeHtml(formatDimensionBoardPercent(ratio)) + "</td>";
+          }).join("") +
+          "</tr>"
+        );
+      }).join("") +
+      "</tbody></table></div>" +
+      '<div class="field-note dimension-board-note">' + (mode === "row" ? "行大盘：每行各列占比合计约为 100%（保留三位小数）" : "总大盘：全表所有格子占比合计约为 100%（保留三位小数）") + "</div>"
     );
   }
 
@@ -3552,6 +3680,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     const trendChartTypeSelect = document.getElementById("trendChartTypeSelect");
     const trendZoomScaleInput = document.getElementById("trendZoomScaleInput");
     const addBreakdownFieldBtn = document.getElementById("addBreakdownFieldBtn");
+    const dimensionBoardDropzone = document.querySelector("[data-dimension-board-dropzone]");
 
     if (experimentInput) {
       experimentInput.addEventListener("input", function (event) {
@@ -3704,6 +3833,100 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
         render();
       });
     });
+
+    Array.prototype.forEach.call(document.querySelectorAll("[data-dimension-board-mode]"), function (button) {
+      button.addEventListener("click", function () {
+        const nextMode = button.getAttribute("data-dimension-board-mode");
+        state.dimensionBoardMode = nextMode === "row" ? "row" : "total";
+        render();
+      });
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll("[data-dimension-board-remove]"), function (button) {
+      button.addEventListener("click", function (event) {
+        event.stopPropagation();
+        const metricId = button.getAttribute("data-dimension-board-remove");
+        state.dimensionBoardMetricIds = (state.dimensionBoardMetricIds || []).filter(function (item) {
+          return item !== metricId;
+        });
+        render();
+      });
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll("[data-dimension-board-metric-id]"), function (token) {
+      token.addEventListener("dragstart", function (event) {
+        const metricId = token.getAttribute("data-dimension-board-metric-id") || "";
+        state.dimensionBoardDragMetricId = metricId;
+        token.classList.add("dragging");
+        if (event.dataTransfer) {
+          event.dataTransfer.effectAllowed = "copyMove";
+          event.dataTransfer.setData("text/plain", metricId);
+        }
+      });
+
+      token.addEventListener("dragover", function (event) {
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+      });
+
+      token.addEventListener("drop", function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        const targetMetricId = token.getAttribute("data-dimension-board-metric-id") || "";
+        const draggedMetricId = (event.dataTransfer && event.dataTransfer.getData("text/plain")) || state.dimensionBoardDragMetricId || state.metricDragSourceId;
+        if (!draggedMetricId || draggedMetricId === targetMetricId) return;
+        const currentOrder = (state.dimensionBoardMetricIds || []).slice();
+        if (!currentOrder.includes(targetMetricId)) return;
+        const metricExists = Boolean(state.schema && (state.schema.metrics || []).some(function (metric) {
+          return metric.id === draggedMetricId;
+        }));
+        if (!metricExists) return;
+        const nextOrder = currentOrder.filter(function (metricId) { return metricId !== draggedMetricId; });
+        const insertIndex = nextOrder.indexOf(targetMetricId);
+        nextOrder.splice(insertIndex < 0 ? nextOrder.length : insertIndex, 0, draggedMetricId);
+        state.dimensionBoardMetricIds = nextOrder;
+        state.metricDragDidMove = true;
+        render();
+      });
+
+      token.addEventListener("dragend", function () {
+        state.dimensionBoardDragMetricId = "";
+        token.classList.remove("dragging");
+      });
+    });
+
+    if (dimensionBoardDropzone) {
+      dimensionBoardDropzone.addEventListener("dragover", function (event) {
+        event.preventDefault();
+        dimensionBoardDropzone.classList.add("drag-over");
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+      });
+      dimensionBoardDropzone.addEventListener("dragleave", function () {
+        dimensionBoardDropzone.classList.remove("drag-over");
+      });
+      dimensionBoardDropzone.addEventListener("drop", function (event) {
+        event.preventDefault();
+        dimensionBoardDropzone.classList.remove("drag-over");
+        const draggedMetricId = (event.dataTransfer && event.dataTransfer.getData("text/plain")) || state.dimensionBoardDragMetricId || state.metricDragSourceId;
+        if (!draggedMetricId) return;
+        const metricExists = Boolean(state.schema && (state.schema.metrics || []).some(function (metric) {
+          return metric.id === draggedMetricId;
+        }));
+        if (!metricExists) return;
+        const nextMetricIds = (state.dimensionBoardMetricIds || []).slice();
+        if (nextMetricIds.includes(draggedMetricId)) {
+          const trimmed = nextMetricIds.filter(function (metricId) { return metricId !== draggedMetricId; });
+          trimmed.push(draggedMetricId);
+          state.dimensionBoardMetricIds = trimmed;
+        } else {
+          nextMetricIds.push(draggedMetricId);
+          state.dimensionBoardMetricIds = nextMetricIds;
+        }
+        state.metricDragDidMove = true;
+        state.dimensionBoardDragMetricId = "";
+        render();
+      });
+    }
 
     Array.prototype.forEach.call(document.querySelectorAll("[data-metric-drag-id]"), function (button) {
       button.addEventListener("dragstart", function (event) {

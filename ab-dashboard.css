@@ -567,6 +567,97 @@ code {
   cursor: grabbing;
 }
 
+.dimension-board-block {
+  margin-top: 14px;
+}
+
+.dimension-board-toolbar {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.dimension-board-dropzone {
+  min-height: 58px;
+  border: 1px dashed rgba(29, 59, 79, 0.22);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.65);
+  padding: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.dimension-board-dropzone.drag-over {
+  border-color: rgba(15, 157, 138, 0.65);
+  background: rgba(15, 157, 138, 0.08);
+}
+
+.dimension-board-token {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(29, 59, 79, 0.16);
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.9);
+  font-weight: 700;
+  cursor: grab;
+  user-select: none;
+}
+
+.dimension-board-token.dragging {
+  opacity: 0.75;
+  cursor: grabbing;
+}
+
+.dimension-board-remove {
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(29, 59, 79, 0.12);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1;
+  font-weight: 700;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+}
+
+.dimension-board-remove:hover {
+  background: rgba(215, 75, 75, 0.2);
+}
+
+.dimension-board-table th,
+.dimension-board-table td {
+  text-align: right;
+}
+
+.dimension-board-table th:first-child,
+.dimension-board-table td:first-child {
+  text-align: left;
+}
+
+.dimension-board-row-label {
+  min-width: 240px;
+}
+
+.dimension-board-value.negative {
+  color: #b44242;
+}
+
+.dimension-board-value.positive {
+  color: #126d61;
+}
+
+.dimension-board-note {
+  margin-top: 10px;
+}
+
 .pill.selected.control {
   background: rgba(29, 59, 79, 0.12);
 }

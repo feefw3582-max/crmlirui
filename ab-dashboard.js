@@ -3860,6 +3860,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
         token.classList.add("dragging");
         if (event.dataTransfer) {
           event.dataTransfer.effectAllowed = "copyMove";
+          event.dataTransfer.setData("application/x-metric-id", metricId);
           event.dataTransfer.setData("text/plain", metricId);
         }
       });
@@ -3873,7 +3874,11 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
         event.preventDefault();
         event.stopPropagation();
         const targetMetricId = token.getAttribute("data-dimension-board-metric-id") || "";
-        const draggedMetricId = (event.dataTransfer && event.dataTransfer.getData("text/plain")) || state.dimensionBoardDragMetricId || state.metricDragSourceId;
+        const draggedMetricId = (
+          (event.dataTransfer && (event.dataTransfer.getData("application/x-metric-id") || event.dataTransfer.getData("text/plain"))) ||
+          state.dimensionBoardDragMetricId ||
+          state.metricDragSourceId
+        );
         if (!draggedMetricId || draggedMetricId === targetMetricId) return;
         const currentOrder = (state.dimensionBoardMetricIds || []).slice();
         if (!currentOrder.includes(targetMetricId)) return;
@@ -3907,7 +3912,11 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       dimensionBoardDropzone.addEventListener("drop", function (event) {
         event.preventDefault();
         dimensionBoardDropzone.classList.remove("drag-over");
-        const draggedMetricId = (event.dataTransfer && event.dataTransfer.getData("text/plain")) || state.dimensionBoardDragMetricId || state.metricDragSourceId;
+        const draggedMetricId = (
+          (event.dataTransfer && (event.dataTransfer.getData("application/x-metric-id") || event.dataTransfer.getData("text/plain"))) ||
+          state.dimensionBoardDragMetricId ||
+          state.metricDragSourceId
+        );
         if (!draggedMetricId) return;
         const metricExists = Boolean(state.schema && (state.schema.metrics || []).some(function (metric) {
           return metric.id === draggedMetricId;
@@ -3931,10 +3940,12 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     Array.prototype.forEach.call(document.querySelectorAll("[data-metric-drag-id]"), function (button) {
       button.addEventListener("dragstart", function (event) {
         state.metricDragSourceId = button.getAttribute("data-metric-drag-id") || "";
+        state.dimensionBoardDragMetricId = state.metricDragSourceId;
         state.metricDragDidMove = false;
         button.classList.add("dragging");
         if (event.dataTransfer) {
-          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.effectAllowed = "copyMove";
+          event.dataTransfer.setData("application/x-metric-id", state.metricDragSourceId);
           event.dataTransfer.setData("text/plain", state.metricDragSourceId);
         }
       });
@@ -3955,6 +3966,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
 
       button.addEventListener("dragend", function () {
         state.metricDragSourceId = "";
+        state.dimensionBoardDragMetricId = "";
         button.classList.remove("dragging");
       });
     });

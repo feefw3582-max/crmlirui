@@ -1165,11 +1165,12 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       state.experimentQuery = experimentIds[0];
     }
 
+    const breakdownOptions = getBreakdownFieldOptions(schema);
     state.breakdownFields = state.breakdownFields.filter(function (fieldId, index, array) {
-      return array.indexOf(fieldId) === index && schema.dimensionFields.some(function (field) { return field.id === fieldId; });
+      return array.indexOf(fieldId) === index && breakdownOptions.some(function (field) { return field.id === fieldId; });
     });
-    if (!state.breakdownFields.length && schema.dimensionFields.length) {
-      state.breakdownFields = [schema.dimensionFields[0].id];
+    if (!state.breakdownFields.length && breakdownOptions.length) {
+      state.breakdownFields = [breakdownOptions[0].id];
     }
     state.breakdownField = state.breakdownFields[0] || "";
 
@@ -1779,7 +1780,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
         return {
           fieldId: fieldId,
           fieldLabel: getDimensionLabel(options.schema, fieldId),
-          value: row.dimensions[fieldId] || "未标注"
+          value: getBreakdownFieldValue(row, fieldId)
         };
       });
       const sectionKey = buildDimensionSectionKey(parts);
@@ -2759,7 +2760,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
   }
 
   function renderDimensionPanel(schema, sections, scope) {
-    if (!schema.dimensionFields.length) {
+    if (!getBreakdownFieldOptions(schema).length) {
       return (
         '<section class="panel"><div class="panel-head"><div><p class="eyebrow">属性拆解</p><h2>维度对比</h2></div></div>' +
         '<div class="empty"><div><strong>当前数据未识别出明显属性字段</strong><p class="muted">像 grade / subject / city / channel 这种低基数字段，会被自动识别为维度。</p></div></div></section>'
@@ -2993,6 +2994,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
   }
 
   function renderBreakdownFieldBuilder(schema) {
+    const breakdownOptions = getBreakdownFieldOptions(schema);
     return (
       '<div class="breakdown-builder">' +
       '<div class="filter-head"><strong>属性组合</strong><span class="muted">最多可叠加 3 个属性</span></div>' +
@@ -3000,7 +3002,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
         return (
           '<div class="breakdown-row">' +
           '<label class="field"><span>属性 ' + (index + 1) + '</span><select data-breakdown-field-select="' + index + '">' +
-          schema.dimensionFields.map(function (field) {
+          breakdownOptions.map(function (field) {
             return '<option value="' + escapeHtml(field.id) + '"' + (field.id === fieldId ? " selected" : "") + '>' + escapeHtml(field.label) + "</option>";
           }).join("") +
           '</select></label>' +
@@ -3008,7 +3010,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
           "</div>"
         );
       }).join("") +
-      '<div class="button-row"><button type="button" class="button-ghost mini" id="addBreakdownFieldBtn"' + (state.breakdownFields.length >= Math.min(3, schema.dimensionFields.length) ? " disabled" : "") + '>新增属性</button></div>' +
+      '<div class="button-row"><button type="button" class="button-ghost mini" id="addBreakdownFieldBtn"' + (state.breakdownFields.length >= Math.min(3, breakdownOptions.length) ? " disabled" : "") + '>新增属性</button></div>' +
       "</div>"
     );
   }
@@ -3068,10 +3070,31 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
   }
 
   function getDimensionLabel(schema, fieldId) {
+    if (fieldId === "date") return "日期";
     const target = schema.dimensionFields.find(function (field) {
       return field.id === fieldId;
     });
     return target ? target.label : "未选择维度";
+  }
+
+  function getBreakdownFieldOptions(schema) {
+    if (!schema) return [];
+    const options = [];
+    if (schema.dateField) {
+      options.push({
+        id: "date",
+        key: schema.dateField,
+        label: "日期",
+        normalized: normalizeHeader(schema.dateField || "date")
+      });
+    }
+    return options.concat(schema.dimensionFields || []);
+  }
+
+  function getBreakdownFieldValue(row, fieldId) {
+    if (!row) return "未标注";
+    if (fieldId === "date") return row.date || "未标注";
+    return row.dimensions[fieldId] || "未标注";
   }
 
   function getTrendXAxisOptions(schema) {
@@ -3770,10 +3793,11 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
 
     if (addBreakdownFieldBtn) {
       addBreakdownFieldBtn.addEventListener("click", function () {
-        const nextField = state.schema.dimensionFields.find(function (field) {
+        const breakdownOptions = getBreakdownFieldOptions(state.schema);
+        const nextField = breakdownOptions.find(function (field) {
           return !state.breakdownFields.includes(field.id);
         });
-        if (!nextField || state.breakdownFields.length >= Math.min(3, state.schema.dimensionFields.length)) return;
+        if (!nextField || state.breakdownFields.length >= Math.min(3, breakdownOptions.length)) return;
         state.breakdownFields = state.breakdownFields.concat(nextField.id);
         state.breakdownField = state.breakdownFields[0] || "";
         state.openDimensions = [];

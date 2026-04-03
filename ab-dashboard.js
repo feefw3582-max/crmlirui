@@ -330,8 +330,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       });
 
     const formulaMetricConfigs = buildFormulaMetricConfigs(baseMetrics, formulaOverrides || []);
-    const formulaMetrics = inferFormulaMetrics(baseMetrics, formulaMetricConfigs);
-    const metrics = baseMetrics.concat(formulaMetrics);
+    const metrics = inferFormulaMetrics(baseMetrics, formulaMetricConfigs);
     const groupValues = getDistinctValues(rows, groupField);
     const inferredGroupTypes = inferGroupTypeMap(groupValues);
 
@@ -561,11 +560,17 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       ? overrideConfigs.slice()
       : buildDefaultFormulaMetricConfigs(baseMetrics);
     const knownPresetIds = existingConfigs.map(function (config) { return config.presetId; }).filter(Boolean);
+    const knownTargetMetricIds = existingConfigs.map(function (config) { return config.targetMetricId; }).filter(Boolean);
 
     FORMULA_PRESET_LIBRARY.forEach(function (preset) {
       if (knownPresetIds.includes(preset.presetId)) return;
       const defaultConfig = createPresetFormulaConfig(preset.presetId, baseMetrics);
       existingConfigs.push(defaultConfig);
+    });
+
+    baseMetrics.forEach(function (metric, index) {
+      if (knownTargetMetricIds.includes(metric.id)) return;
+      existingConfigs.push(createExistingMetricFormulaConfig(metric, baseMetrics, index + 1000));
     });
 
     return existingConfigs.map(function (config, index) {
@@ -601,18 +606,56 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     };
   }
 
+  function createExistingMetricFormulaConfig(baseMetric, baseMetrics, order) {
+    return {
+      id: "existing_metric:" + baseMetric.id,
+      presetId: "",
+      targetMetricId: baseMetric.id,
+      label: baseMetric.label,
+      type: baseMetric.type,
+      formula: getDefaultFormulaForExistingMetric(baseMetric, baseMetrics),
+      compareToControl: false,
+      selected: true,
+      isCustom: false,
+      order: order,
+      useMode: "existing"
+    };
+  }
+
   function normalizeFormulaConfig(config, baseMetrics, index) {
+    const targetMetric = (baseMetrics || []).find(function (metric) {
+      return metric.id === config.targetMetricId;
+    });
     return {
       id: config.id || ("custom_formula_" + index),
       presetId: config.presetId || "",
-      label: config.label || ("自定义统计量" + (index + 1)),
-      type: config.type === "percent" ? "percent" : "number",
+      targetMetricId: config.targetMetricId || "",
+      label: config.label || (targetMetric ? targetMetric.label : ("自定义统计量" + (index + 1))),
+      type: config.type === "percent" ? "percent" : ((targetMetric && targetMetric.type) || "number"),
       formula: String(config.formula || "").trim(),
       compareToControl: Boolean(config.compareToControl),
-      selected: config.selected !== false,
+      selected: config.targetMetricId ? true : config.selected !== false,
       isCustom: Boolean(config.isCustom),
-      order: Number.isFinite(config.order) ? config.order : index
+      order: Number.isFinite(config.order) ? config.order : index,
+      useMode: config.useMode === "formula" ? "formula" : "existing"
     };
+  }
+
+  function getDefaultFormulaForExistingMetric(baseMetric, baseMetrics) {
+    if (!baseMetric) return "";
+    const numeratorIds = Array.isArray(baseMetric.aggregateNumeratorIds) ? baseMetric.aggregateNumeratorIds : [];
+    const denominatorId = baseMetric.aggregateDenominatorId || baseMetric.inferredDenominatorId || "";
+    if (numeratorIds.length && denominatorId) {
+      const numeratorLabels = numeratorIds.map(function (metricId) {
+        const metric = (baseMetrics || []).find(function (item) { return item.id === metricId; });
+        return metric ? ("{" + metric.label + "}") : "";
+      }).filter(Boolean);
+      const denominatorMetric = (baseMetrics || []).find(function (metric) { return metric.id === denominatorId; });
+      if (numeratorLabels.length && denominatorMetric) {
+        return numeratorLabels.join(" + ") + " / {" + denominatorMetric.label + "}";
+      }
+    }
+    return "";
   }
 
   function getDefaultFormulaForPreset(presetId, baseMetrics) {
@@ -641,10 +684,42 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
   }
 
   function inferFormulaMetrics(baseMetrics, formulaConfigs) {
-    return formulaConfigs.filter(function (config) {
-      return config.selected;
-    }).map(function (config) {
-      return {
+    const overrideMap = {};
+    const extraMetrics = [];
+
+    formulaConfigs.forEach(function (config) {
+      if (config.targetMetricId) {
+        if (config.useMode !== "formula") return;
+        const targetMetric = (baseMetrics || []).find(function (metric) { return metric.id === config.targetMetricId; });
+        if (!targetMetric) return;
+        if (!config.formula && targetMetric.aggregateDenominatorId && targetMetric.aggregateNumeratorIds && targetMetric.aggregateNumeratorIds.length) {
+          overrideMap[targetMetric.id] = Object.assign({}, targetMetric, {
+            label: config.label || targetMetric.label,
+            type: config.type,
+            compareToControl: Boolean(config.compareToControl),
+            useAggregateDefinition: true
+          });
+          return;
+        }
+        overrideMap[targetMetric.id] = {
+          id: targetMetric.id,
+          key: targetMetric.key,
+          label: config.label || targetMetric.label,
+          normalized: targetMetric.normalized,
+          source: "formula",
+          type: config.type,
+          concept: targetMetric.concept,
+          formula: config.formula,
+          validation: config.validation,
+          presetId: config.presetId,
+          isCustom: false,
+          compareToControl: Boolean(config.compareToControl)
+        };
+        return;
+      }
+
+      if (!config.selected) return;
+      extraMetrics.push({
         id: config.id,
         label: config.label,
         type: config.type,
@@ -654,12 +729,22 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
         presetId: config.presetId,
         isCustom: config.isCustom,
         compareToControl: Boolean(config.compareToControl)
-      };
+      });
     });
+
+    return baseMetrics.map(function (metric) {
+      return overrideMap[metric.id] || metric;
+    }).concat(extraMetrics);
   }
 
   function validateFormulaMetricConfig(config, baseMetrics, formulaConfigs) {
     const warnings = [];
+    if (config.targetMetricId && config.useMode !== "formula") {
+      return {
+        valid: true,
+        warnings: warnings
+      };
+    }
     if (!config.formula) {
       warnings.push("还没有填写公式。");
     }
@@ -839,6 +924,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
 
   function isCumulativeMetric(metric) {
     const normalized = String(metric && metric.normalized || "").toLowerCase();
+    if (metric && metric.isCumulative) return true;
     return /(累计|累积|cumulative|cumul|running|todate|mtd|ytd)/i.test(normalized);
   }
 
@@ -849,18 +935,24 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
   }
 
   function isPaidLikeMetric(metric) {
+    const source = String(metric && (metric.label || metric.key || metric.normalized) || "").toLowerCase();
+    if (source.includes("\u4ed8\u8d39") || source.includes("\u652f\u4ed8")) return true;
     const normalized = String(metric && metric.normalized || "").toLowerCase();
     return /(付费|支付|paid|payment|payuv|payuser|付费用户)/i.test(normalized);
   }
 
   function pickTrafficMetric(metrics, includeCumulativeFallback) {
+    function isTrafficMetricCandidate(metric) {
+      const normalized = String(metric && metric.normalized || "").toLowerCase();
+      return !/arpu|arppu|ctr|cvr|rate|ratio/.test(normalized);
+    }
     const trafficHints = ["dau", "activeuv", "active", "traffic", "展现uv", "曝光uv", "impressionuv", "uv", "user", "users", "visitor", "visitors", "曝光", "展现", "view", "impression", "pv"];
     const additiveMetric = pickMetricByHints((metrics || []).filter(function (metric) {
-      return !isCumulativeMetric(metric) && !isPaidLikeMetric(metric);
+      return !isCumulativeMetric(metric) && !isPaidLikeMetric(metric) && isTrafficMetricCandidate(metric);
     }), trafficHints);
     if (additiveMetric || includeCumulativeFallback === false) return additiveMetric;
     return pickMetricByHints((metrics || []).filter(function (metric) {
-      return !isPaidLikeMetric(metric);
+      return !isPaidLikeMetric(metric) && isTrafficMetricCandidate(metric);
     }), trafficHints);
   }
 
@@ -1238,9 +1330,14 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
   function aggregateRows(rows, schema) {
     const totals = {};
     const counts = {};
+    const derivedDenominatorSpecs = getDerivedAggregateDenominatorSpecs(schema);
     schema.baseMetrics.forEach(function (metric) {
       totals[metric.id] = 0;
       counts[metric.id] = 0;
+    });
+    derivedDenominatorSpecs.forEach(function (spec) {
+      totals[spec.id] = 0;
+      counts[spec.id] = 0;
     });
     rows.forEach(function (row) {
       schema.baseMetrics.forEach(function (metric) {
@@ -1248,6 +1345,18 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
           totals[metric.id] += row.metrics[metric.id];
           counts[metric.id] += 1;
         }
+      });
+      derivedDenominatorSpecs.forEach(function (spec) {
+        const rawRate = row && row.metrics ? row.metrics[spec.rateMetricId] : null;
+        const ratio = Number.isFinite(rawRate) ? rawRate * (spec.rateMultiplier || 1) : null;
+        if (!Number.isFinite(ratio) || ratio <= 0) return;
+        const numerator = spec.numeratorMetricIds.reduce(function (sum, metricId) {
+          const value = row && row.metrics ? row.metrics[metricId] : null;
+          return sum + (Number.isFinite(value) ? value : 0);
+        }, 0);
+        if (!Number.isFinite(numerator) || numerator < 0) return;
+        totals[spec.id] += numerator / ratio;
+        counts[spec.id] += 1;
       });
     });
     schema.baseMetrics.forEach(function (metric) {
@@ -1260,6 +1369,16 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       hasData: rows.length > 0,
       rowCount: rows.length
     };
+  }
+
+  function getDerivedAggregateDenominatorSpecs(schema) {
+    const specs = [];
+    (schema && schema.baseMetrics ? schema.baseMetrics : []).forEach(function (metric) {
+      const spec = metric && metric.aggregateDerivedDenominatorSpec;
+      if (!spec || specs.some(function (item) { return item.id === spec.id; })) return;
+      specs.push(spec);
+    });
+    return specs;
   }
 
   function aggregateSelectedUvMetric(rows, metric) {
@@ -1540,19 +1659,21 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       };
     }
 
+    const aggregateMetricIds = Object.keys(aggregateRows([], schema).totals);
     const summed = bundles.reduce(function (accumulator, item) {
-        schema.baseMetrics.forEach(function (metric) {
-          accumulator.totals[metric.id] += item.baseBundle.totals[metric.id] || 0;
+        aggregateMetricIds.forEach(function (metricId) {
+          accumulator.totals[metricId] += item.baseBundle.totals[metricId] || 0;
+          accumulator.counts[metricId] += item.baseBundle.counts[metricId] || 0;
         });
         return accumulator;
       }, aggregateRows([], schema));
 
     const next = {};
     const counts = {};
-    schema.baseMetrics.forEach(function (metric) {
-      next[metric.id] = summed.totals[metric.id] / bundles.length;
-      counts[metric.id] = bundles.reduce(function (sum, item) {
-        return sum + (item.baseBundle.counts[metric.id] || 0);
+    aggregateMetricIds.forEach(function (metricId) {
+      next[metricId] = summed.totals[metricId] / bundles.length;
+      counts[metricId] = bundles.reduce(function (sum, item) {
+        return sum + (item.baseBundle.counts[metricId] || 0);
       }, 0) / bundles.length;
     });
     return {
@@ -4208,17 +4329,20 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       const typeSelect = document.querySelector('[data-formula-type="' + configId + '"]');
       const expressionInput = document.querySelector('[data-formula-expression="' + configId + '"]');
       const compareInput = document.querySelector('[data-formula-compare="' + configId + '"]');
+      const useModeSelect = document.querySelector('[data-formula-use-mode="' + configId + '"]');
       const existing = configMap[configId] || {};
       configMap[configId] = {
         id: configId,
         presetId: card.getAttribute("data-preset-id") || existing.presetId || "",
+        targetMetricId: card.getAttribute("data-target-metric-id") || existing.targetMetricId || "",
         label: labelInput && String(labelInput.value).trim() ? String(labelInput.value).trim() : (existing.label || "鑷畾涔夌粺璁￠噺"),
         type: typeSelect && typeSelect.value === "percent" ? "percent" : "number",
         formula: expressionInput ? String(expressionInput.value || "").trim() : (existing.formula || ""),
         compareToControl: compareInput ? Boolean(compareInput.checked) : Boolean(existing.compareToControl),
         selected: true,
         isCustom: card.getAttribute("data-is-custom") === "true" || existing.isCustom,
-        order: Number(card.getAttribute("data-order"))
+        order: Number(card.getAttribute("data-order")),
+        useMode: useModeSelect && useModeSelect.value === "formula" ? "formula" : ((existing.useMode === "formula") ? "formula" : "existing")
       };
     });
 
@@ -4227,13 +4351,15 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       return {
         id: config.id,
         presetId: config.presetId || "",
+        targetMetricId: config.targetMetricId || "",
         label: config.label,
         type: config.type,
         formula: config.formula,
         compareToControl: Boolean(config.compareToControl),
         selected: config.selected !== false,
         isCustom: Boolean(config.isCustom),
-        order: Number.isFinite(config.order) ? config.order : 0
+        order: Number.isFinite(config.order) ? config.order : 0,
+        useMode: config.useMode === "formula" ? "formula" : "existing"
       };
     }).sort(function (left, right) {
       return (left.order || 0) - (right.order || 0);
@@ -4444,22 +4570,36 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
           .map(function (item) { return "{" + item.label + "}"; })
       );
     const availableDimensions = schema.dimensionFields.map(function (field) { return field.label; });
-    const warnings = config.validation && config.validation.warnings ? config.validation.warnings : [];
+    const warnings = config.useMode === "formula" && config.validation && config.validation.warnings ? config.validation.warnings : [];
     const actionLabel = config.isCustom ? "删除" : "停用";
     const actionMode = config.isCustom ? "delete" : "disable";
+    const targetMetric = config.targetMetricId
+      ? schema.baseMetrics.find(function (metric) { return metric.id === config.targetMetricId; })
+      : null;
+    const cardMeta = targetMetric ? "已有原始指标" : (config.isCustom ? "自定义统计量" : "预置统计量");
+    const disableFormulaInputs = Boolean(config.targetMetricId && config.useMode !== "formula");
+    const actionButton = targetMetric
+      ? ""
+      : '<button type="button" class="button-ghost mini" data-remove-formula-config="' + escapeHtml(config.id) + '" data-remove-mode="' + actionMode + '">' + actionLabel + "</button>";
 
     return (
-      '<article class="formula-card" data-formula-config-card="' + escapeHtml(config.id) + '" data-preset-id="' + escapeHtml(config.presetId || "") + '" data-is-custom="' + (config.isCustom ? "true" : "false") + '" data-order="' + escapeHtml(config.order || 0) + '">' +
-      '<div class="formula-card-head"><div><strong>' + escapeHtml(config.label) + '</strong><div class="muted">' + escapeHtml(config.isCustom ? "自定义统计量" : "预置统计量") + "</div></div>" +
-      '<button type="button" class="button-ghost mini" data-remove-formula-config="' + escapeHtml(config.id) + '" data-remove-mode="' + actionMode + '">' + actionLabel + "</button></div>" +
+      '<article class="formula-card" data-formula-config-card="' + escapeHtml(config.id) + '" data-preset-id="' + escapeHtml(config.presetId || "") + '" data-is-custom="' + (config.isCustom ? "true" : "false") + '" data-target-metric-id="' + escapeHtml(config.targetMetricId || "") + '" data-order="' + escapeHtml(config.order || 0) + '">' +
+      '<div class="formula-card-head"><div><strong>' + escapeHtml(config.label) + '</strong><div class="muted">' + escapeHtml(cardMeta) + "</div></div>" +
+      actionButton + "</div>" +
       '<div class="formula-form-grid">' +
       '<label class="field"><span>统计量名称</span><input type="text" data-formula-label="' + escapeHtml(config.id) + '" value="' + escapeHtml(config.label) + '" placeholder="例如：点击率 / CVR / GMV" /></label>' +
       '<label class="field"><span>展示格式</span><select data-formula-type="' + escapeHtml(config.id) + '">' +
       '<option value="number"' + (config.type === "number" ? " selected" : "") + '>数值</option>' +
       '<option value="percent"' + (config.type === "percent" ? " selected" : "") + '>百分比</option>' +
       '</select></label></div>' +
-      '<label class="field"><span>计算公式</span><textarea rows="3" data-formula-expression="' + escapeHtml(config.id) + '" placeholder="{订单量} / {UV} 或 VLOOKUP(&quot;学科&quot;, &quot;数学&quot;, &quot;GMV&quot;)">' + escapeHtml(config.formula || "") + "</textarea></label>" +
+      (targetMetric
+        ? '<label class="field"><span>当前取值</span><select data-formula-use-mode="' + escapeHtml(config.id) + '"><option value="existing"' + (config.useMode !== "formula" ? " selected" : "") + '>用已有值</option><option value="formula"' + (config.useMode === "formula" ? " selected" : "") + '>用公式覆盖</option></select></label>'
+        : "") +
+      '<label class="field"><span>计算公式</span><textarea rows="3" data-formula-expression="' + escapeHtml(config.id) + '" placeholder="{订单量} / {UV} 或 VLOOKUP(&quot;学科&quot;, &quot;数学&quot;, &quot;GMV&quot;)"' + (disableFormulaInputs ? " disabled" : "") + '>' + escapeHtml(config.formula || "") + "</textarea></label>" +
       '<div class="formula-meta">' +
+      (targetMetric
+        ? '<div class="field-note"><strong>原始列：</strong>' + escapeHtml(targetMetric.label) + (config.useMode === "formula" ? "，当前会用下面公式覆盖这个原始指标。" : "，当前直接读取原表值。") + "</div>"
+        : "") +
       '<div class="field-note">可引用指标：' + escapeHtml(availableMetricRefs.length ? availableMetricRefs.join(" / ") : "暂无") + "</div>" +
       '<div class="field-note">可查找维度：' + escapeHtml(availableDimensions.length ? availableDimensions.join(" / ") : "暂无") + "</div>" +
       '<div class="field-note">当展示格式选择百分数时，系统会自动乘 100 并补上 %。</div>' +
@@ -4748,8 +4888,9 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
 
   function renderFormulaEditor(schema) {
     const formulaConfigs = getOrderedFormulaConfigs(schema);
-    const presetConfigs = formulaConfigs.filter(function (config) { return Boolean(config.presetId); });
-    const activeConfigs = formulaConfigs.filter(function (config) { return config.selected; });
+    const presetConfigs = formulaConfigs.filter(function (config) { return Boolean(config.presetId) && !config.targetMetricId; });
+    const existingMetricConfigs = formulaConfigs.filter(function (config) { return Boolean(config.targetMetricId); });
+    const activeConfigs = formulaConfigs.filter(function (config) { return config.selected && !config.targetMetricId; });
     const ratioFormula = "((本实验组该统计量 / 对照组该统计量) - 1) * 100";
 
     return (
@@ -4766,14 +4907,20 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       '<div class="field-note"><strong>已识别底层指标：</strong> ' + escapeHtml(schema.baseMetrics.map(function (metric) { return metric.label; }).join(" / ")) + "</div>" +
       '<div class="field-note"><strong>已识别维度：</strong> ' + escapeHtml(schema.dimensionFields.length ? schema.dimensionFields.map(function (field) { return field.label; }).join(" / ") : "暂无") + "</div>" +
       "</div>" +
+      (existingMetricConfigs.length
+        ? '<div class="formula-reference-box"><div class="field-note"><strong>已有原始指标：</strong>下面这些是表里自带的列。默认直接用已有值；只有切到“公式覆盖”时，系统才会重算并覆盖展示。</div></div>' +
+          '<div class="formula-grid">' + existingMetricConfigs.map(function (config) {
+            return renderFormulaCard(config, schema);
+          }).join("") + "</div>"
+        : "") +
       (activeConfigs.length
-        ? '<div class="formula-grid">' + activeConfigs.map(function (config) {
+        ? '<div class="formula-reference-box"><div class="field-note"><strong>新增统计量：</strong>这些是预置或自定义统计量，可以直接添加到总表和趋势图里。</div></div><div class="formula-grid">' + activeConfigs.map(function (config) {
             return renderFormulaCard(config, schema);
           }).join("") + "</div>"
         : '<div class="empty inline-empty"><div><strong>还没有启用统计量</strong><p class="muted">可以先点上面的预置指标，也可以新增一个自定义统计量。</p></div></div>') +
       '<div class="formula-reference-box formula-helper-box">' +
       '<div class="field-note"><strong>环比算法（实验组 vs 对照组）：</strong>' + escapeHtml(ratioFormula) + "</div>" +
-      '<div class="field-note"><strong>展示格式：</strong>结果转成百分比，并保留小数点后两位。</div>' +
+      '<div class="field-note"><strong>展示格式：</strong>结果转成百分比，并保留小数点后四位。</div>' +
       '<div class="field-note"><strong>适用场景：</strong>用于看实验组相对对照组的变化幅度，和表格里的提升率口径一致。</div>' +
       "</div>" +
       '<div class="button-row" style="margin-top:10px;"><button type="button" class="button-ghost" id="applyFormulaBtn">应用统计量配置</button></div></div>'
@@ -4795,6 +4942,45 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       }).join("||");
     })).size;
     return Math.max(0.12, distinctCount / objectRows.length);
+  }
+
+  function estimateSheetStructureFactor(headers) {
+    const candidateHeaders = (headers || []).filter(Boolean).map(function (header) {
+      return String(header).trim();
+    }).filter(Boolean);
+    if (!candidateHeaders.length) return 0.35;
+
+    const normalizedHeaders = candidateHeaders.map(function (header) {
+      return normalizeHeader(header);
+    });
+    const uniqueRatio = new Set(normalizedHeaders).size / candidateHeaders.length;
+    const namedRatio = candidateHeaders.filter(function (header) {
+      return !/^未命名字段/i.test(header) && !/^\d+(\.\d+)?$/.test(header);
+    }).length / candidateHeaders.length;
+    const pivotPenaltyCount = candidateHeaders.filter(function (header) {
+      return /^求和项:/i.test(header) || /^\(多项\)$/i.test(header) || /^未命名字段/i.test(header);
+    }).length;
+    const numericHeaderPenaltyCount = candidateHeaders.filter(function (header) {
+      return /^\d+(\.\d+)?$/.test(header);
+    }).length;
+    const coreHeaderCount = normalizedHeaders.filter(function (header) {
+      return EXPERIMENT_HEADER_HINTS.test(header) || DATE_HEADER_HINTS.test(header) || GROUP_HEADER_HINTS.test(header);
+    }).length;
+    const metricHeaderCount = normalizedHeaders.filter(function (header) {
+      return METRIC_HEADER_HINTS.test(header);
+    }).length;
+    const dimensionHeaderCount = normalizedHeaders.filter(function (header) {
+      return DIMENSION_HEADER_HINTS.test(header);
+    }).length;
+    const rawScore =
+      coreHeaderCount * 1.1 +
+      Math.min(metricHeaderCount, 12) * 0.12 +
+      Math.min(dimensionHeaderCount, 6) * 0.08 +
+      uniqueRatio * 0.4 +
+      namedRatio * 0.35 -
+      pivotPenaltyCount * 0.18 -
+      numericHeaderPenaltyCount * 0.28;
+    return Math.max(0.28, 1 + rawScore);
   }
 
   function parseSheetToRows(name, worksheet) {
@@ -4834,10 +5020,11 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
 
     const headerCount = headers.filter(Boolean).length;
     const grainFactor = estimateSheetGrainFactor(objectRows, headers);
+    const structureFactor = estimateSheetStructureFactor(headers);
     return {
       name: name,
       rows: objectRows,
-      score: objectRows.length * Math.max(headerCount, 1) * grainFactor
+      score: objectRows.length * Math.max(headerCount, 1) * grainFactor * structureFactor
     };
   }
 
@@ -5056,6 +5243,17 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       });
   }
 
+  function buildDerivedTrafficSpec(rateMetric, numeratorMetrics) {
+    if (!rateMetric || !numeratorMetrics || !numeratorMetrics.length) return null;
+    return {
+      id: "derived:dau:" + rateMetric.id,
+      label: "DAU",
+      rateMetricId: rateMetric.id,
+      rateMultiplier: rateMetric.multiplier || 1,
+      numeratorMetricIds: numeratorMetrics.map(function (metric) { return metric.id; })
+    };
+  }
+
   function attachAggregateMetricDefinitions(baseMetrics) {
     const paidUvMetric = pickAdditiveMetricByHints(baseMetrics, ["付费uv", "payuv", "paiduv", "付费用户", "支付uv"]) ||
       pickMetricByHints(baseMetrics, ["付费uv", "payuv", "paiduv", "付费用户", "支付uv"]);
@@ -5071,57 +5269,151 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     const genericRevenueMetric = pickMetricByHints(baseMetrics, ["gmv", "revenue", "income", "sales", "tradeamt", "amount", "amt", "收入", "收益", "成交额"]);
     const vipRevenueMetric = pickMetricByHints(baseMetrics, ["vip_gmv", "vipgmv", "vip收入", "vip收益", "vip成交额"]) || genericRevenueMetric;
     const svipRevenueMetric = pickMetricByHints(baseMetrics, ["svip_gmv", "svipgmv", "svip收入", "svip收益", "svip成交额"]);
+    const conversionMetrics = (baseMetrics || []).filter(function (metric) {
+      const normalized = String(metric && metric.normalized || "").toLowerCase();
+      return metric && metric.type === "percent" && (metric.concept === "conversion" || /转率|转化率|conversion|cvr/.test(normalized));
+    });
+    const vipConversionMetric = pickMetricByHints(conversionMetrics, ["vip转率", "vip转化率", "vipconversion", "vipcvr"]);
+    const svipConversionMetric = pickMetricByHints(conversionMetrics, ["svip转率", "svip转化率", "svipconversion", "svipcvr"]);
+    const combinedConversionMetric = pickMetricByHints(conversionMetrics, ["vip和svip转率", "vipandsvip", "vip和svip转化率", "vipsvip"]);
+    const genericConversionMetric = pickMetricByHints(conversionMetrics, ["转率", "转化率", "conversion", "cvr"]);
+    const vipDerivedTrafficSpec = !additiveTrafficMetric ? buildDerivedTrafficSpec(vipConversionMetric, [vipOrderMetric].filter(Boolean)) : null;
+    const svipDerivedTrafficSpec = !additiveTrafficMetric ? buildDerivedTrafficSpec(svipConversionMetric, [svipOrderMetric].filter(Boolean)) : null;
+    const combinedDerivedTrafficSpec = !additiveTrafficMetric ? buildDerivedTrafficSpec(combinedConversionMetric, [vipOrderMetric, svipOrderMetric].filter(Boolean)) : null;
+    const genericDerivedTrafficSpec = !additiveTrafficMetric ? buildDerivedTrafficSpec(genericConversionMetric, [genericOrderMetric].filter(Boolean)) : null;
+    const resolvedGenericOrderMetric = genericOrderMetric || (baseMetrics || []).find(function (metric) {
+      const source = String(metric && (metric.label || metric.normalized) || "");
+      return /(订单|order|orders|purchase|成交)/i.test(source) && !/svip|vip/i.test(String(metric && metric.normalized || ""));
+    });
+    const resolvedVipOrderMetric = vipOrderMetric || (baseMetrics || []).find(function (metric) {
+      const source = String(metric && (metric.label || metric.normalized) || "");
+      return /vip/i.test(String(metric && metric.normalized || "")) && !/svip/i.test(String(metric && metric.normalized || "")) && /(订单|order|orders|purchase|成交)/i.test(source);
+    });
+    const resolvedSvipOrderMetric = svipOrderMetric || (baseMetrics || []).find(function (metric) {
+      const source = String(metric && (metric.label || metric.normalized) || "");
+      return /svip/i.test(String(metric && metric.normalized || "")) && /(订单|order|orders|purchase|成交)/i.test(source);
+    });
+    const resolvedVipConversionMetric = vipConversionMetric || conversionMetrics.find(function (metric) {
+      return /vip/i.test(String(metric && metric.normalized || "")) && !/svip/i.test(String(metric && metric.normalized || ""));
+    });
+    const resolvedSvipConversionMetric = svipConversionMetric || conversionMetrics.find(function (metric) {
+      return /svip/i.test(String(metric && metric.normalized || ""));
+    });
+    const resolvedCombinedConversionMetric = combinedConversionMetric || conversionMetrics.find(function (metric) {
+      const normalized = String(metric && metric.normalized || "").toLowerCase();
+      return /vip/.test(normalized) && /svip/.test(normalized);
+    });
+    const resolvedGenericConversionMetric = genericConversionMetric || conversionMetrics.find(function (metric) {
+      const normalized = String(metric && metric.normalized || "").toLowerCase();
+      return !/vip/.test(normalized) && !/svip/.test(normalized);
+    });
+    const resolvedVipDerivedTrafficSpec = vipDerivedTrafficSpec || (!additiveTrafficMetric ? buildDerivedTrafficSpec(resolvedVipConversionMetric, [resolvedVipOrderMetric].filter(Boolean)) : null);
+    const resolvedSvipDerivedTrafficSpec = svipDerivedTrafficSpec || (!additiveTrafficMetric ? buildDerivedTrafficSpec(resolvedSvipConversionMetric, [resolvedSvipOrderMetric].filter(Boolean)) : null);
+    const resolvedCombinedDerivedTrafficSpec = combinedDerivedTrafficSpec || (!additiveTrafficMetric ? buildDerivedTrafficSpec(resolvedCombinedConversionMetric, [resolvedVipOrderMetric, resolvedSvipOrderMetric].filter(Boolean)) : null);
+    const resolvedGenericDerivedTrafficSpec = genericDerivedTrafficSpec || (!additiveTrafficMetric ? buildDerivedTrafficSpec(resolvedGenericConversionMetric, [resolvedGenericOrderMetric].filter(Boolean)) : null);
 
     return baseMetrics.map(function (metric) {
       const next = Object.assign({}, metric);
       const normalized = String(metric.normalized || "").toLowerCase();
       let numeratorMetrics = [];
       let denominatorCandidates = [];
+      let derivedTrafficSpec = null;
+
+      function resolveTrafficDenominatorCandidates(preferredDerivedSpec) {
+        if (additiveTrafficMetric) return [additiveTrafficMetric];
+        if (preferredDerivedSpec) return [];
+        return cumulativeTrafficMetric ? [cumulativeTrafficMetric] : [];
+      }
 
       if (metric.type === "percent") {
         if ((/vipandsvip|vip和svip|vipsvip/.test(normalized) || normalized.includes("和svip")) && (vipOrderMetric || svipOrderMetric)) {
           numeratorMetrics = [vipOrderMetric, svipOrderMetric].filter(Boolean);
-          denominatorCandidates = [additiveTrafficMetric, cumulativeTrafficMetric];
+          derivedTrafficSpec = combinedDerivedTrafficSpec;
+          denominatorCandidates = resolveTrafficDenominatorCandidates(derivedTrafficSpec);
         } else if (metric.concept === "ctr" && clickMetric) {
           numeratorMetrics = [clickMetric];
           denominatorCandidates = [exposureMetric];
         } else if (metric.concept === "conversion" || /转率|转化率|conversion|cvr/.test(normalized)) {
           if (/svip/.test(normalized) && svipOrderMetric) {
             numeratorMetrics = [svipOrderMetric];
+            derivedTrafficSpec = svipDerivedTrafficSpec;
           } else if (/vip/.test(normalized) && vipOrderMetric) {
             numeratorMetrics = [vipOrderMetric];
+            derivedTrafficSpec = vipDerivedTrafficSpec;
           } else if (genericOrderMetric) {
             numeratorMetrics = [genericOrderMetric];
+            derivedTrafficSpec = genericDerivedTrafficSpec;
           }
-          denominatorCandidates = [additiveTrafficMetric, cumulativeTrafficMetric];
+          denominatorCandidates = resolveTrafficDenominatorCandidates(derivedTrafficSpec);
         }
       } else if (/arppu/.test(normalized) && vipRevenueMetric) {
         numeratorMetrics = [vipRevenueMetric];
         denominatorCandidates = [paidUvMetric];
       } else if (/svip.*arpu/.test(normalized) && svipRevenueMetric) {
         numeratorMetrics = [svipRevenueMetric];
-        denominatorCandidates = [additiveTrafficMetric, cumulativeTrafficMetric];
+        derivedTrafficSpec = svipDerivedTrafficSpec || genericDerivedTrafficSpec;
+        denominatorCandidates = resolveTrafficDenominatorCandidates(derivedTrafficSpec);
       } else if ((metric.concept === "arpu" || /arpu/.test(normalized)) && vipRevenueMetric) {
         numeratorMetrics = [vipRevenueMetric];
-        denominatorCandidates = [additiveTrafficMetric, cumulativeTrafficMetric];
+        derivedTrafficSpec = vipDerivedTrafficSpec || genericDerivedTrafficSpec;
+        denominatorCandidates = resolveTrafficDenominatorCandidates(derivedTrafficSpec);
       }
 
-      if (!numeratorMetrics.length || !denominatorCandidates.length) {
+      if (!numeratorMetrics.length || (!denominatorCandidates.length && !derivedTrafficSpec)) {
         return next;
       }
 
       const rankedCandidates = rankRatioCandidates(metric, numeratorMetrics, denominatorCandidates);
       const bestCandidate = rankedCandidates[0];
-      if (!bestCandidate) {
+      if (!bestCandidate && !derivedTrafficSpec) {
         return next;
       }
 
-      next.inferredDenominatorId = bestCandidate.metric.id;
-      next.inferredFitError = bestCandidate.error;
       next.aggregateNumeratorIds = numeratorMetrics.map(function (item) { return item.id; });
 
-      if (bestCandidate.error <= 0.05) {
+      if (bestCandidate) {
+        next.inferredDenominatorId = bestCandidate.metric.id;
+        next.inferredFitError = bestCandidate.error;
+      }
+
+      if (bestCandidate && bestCandidate.error <= 0.05) {
         next.aggregateDenominatorId = bestCandidate.metric.id;
+      } else if (derivedTrafficSpec) {
+        next.aggregateDenominatorId = derivedTrafficSpec.id;
+        next.aggregateDerivedDenominatorSpec = derivedTrafficSpec;
+        next.inferredDenominatorId = derivedTrafficSpec.id;
+        next.inferredFitError = bestCandidate ? bestCandidate.error : 0;
+      }
+
+      if (!additiveTrafficMetric) {
+        const numeratorMetricRefs = (next.aggregateNumeratorIds || []).map(function (metricId) {
+          return (baseMetrics || []).find(function (item) { return item.id === metricId; });
+        }).filter(Boolean);
+        if (metric.type === "percent" && numeratorMetricRefs.length && !/ctr|click/.test(normalized)) {
+          const forcedDerivedSpecAscii = buildDerivedTrafficSpec(metric, numeratorMetricRefs);
+          if (forcedDerivedSpecAscii) {
+            next.aggregateDenominatorId = forcedDerivedSpecAscii.id;
+            next.aggregateDerivedDenominatorSpec = forcedDerivedSpecAscii;
+            next.inferredDenominatorId = forcedDerivedSpecAscii.id;
+          }
+        }
+        if (metric.type === "percent" && (metric.concept === "conversion" || /杞巼|杞寲鐜噟conversion|cvr/.test(normalized))) {
+          const forcedDerivedSpec = buildDerivedTrafficSpec(metric, numeratorMetricRefs);
+          if (forcedDerivedSpec) {
+            next.aggregateDenominatorId = forcedDerivedSpec.id;
+            next.aggregateDerivedDenominatorSpec = forcedDerivedSpec;
+            next.inferredDenominatorId = forcedDerivedSpec.id;
+          }
+        } else if (/svip.*arpu/.test(normalized) && resolvedSvipDerivedTrafficSpec) {
+          next.aggregateDenominatorId = resolvedSvipDerivedTrafficSpec.id;
+          next.aggregateDerivedDenominatorSpec = resolvedSvipDerivedTrafficSpec;
+          next.inferredDenominatorId = resolvedSvipDerivedTrafficSpec.id;
+        } else if ((metric.concept === "arpu" || /arpu/.test(normalized)) && !/arppu/.test(normalized) && (resolvedVipDerivedTrafficSpec || resolvedGenericDerivedTrafficSpec)) {
+          const forcedDerivedSpec = resolvedVipDerivedTrafficSpec || resolvedGenericDerivedTrafficSpec;
+          next.aggregateDenominatorId = forcedDerivedSpec.id;
+          next.aggregateDerivedDenominatorSpec = forcedDerivedSpec;
+          next.inferredDenominatorId = forcedDerivedSpec.id;
+        }
       }
 
       return next;

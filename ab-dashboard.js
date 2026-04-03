@@ -65,6 +65,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
   const SERIES_COLORS = ["#213547", "#0f9d8a", "#e85d4d", "#ff9f1c", "#1d4ed8", "#b83280", "#2f855a", "#6f42c1"];
   const collator = new Intl.Collator("zh-CN", { numeric: true, sensitivity: "base" });
   const numberFormatter = new Intl.NumberFormat("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const percentFormatter = new Intl.NumberFormat("zh-CN", { minimumFractionDigits: 4, maximumFractionDigits: 4 });
   const integerFormatter = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 });
 
   const dom = {
@@ -483,7 +484,21 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     if ((column.sampleValues || []).some(function (value) { return /%/.test(String(value)); })) {
       return 1;
     }
-    return column.mostlyRatioValues && PERCENT_RATIO_MULTIPLIER_HINTS.test(column.normalized) ? 100 : 1;
+    const values = (column.numericValues || []).filter(function (value) {
+      return Number.isFinite(value) && value >= 0;
+    }).sort(function (left, right) {
+      return left - right;
+    });
+    const median = values.length
+      ? values[Math.floor(values.length / 2)]
+      : 0;
+    const hasExplicitRatioHint = PERCENT_RATIO_MULTIPLIER_HINTS.test(column.normalized);
+    const hasGenericRateHint = /(占比|比率|比例|比值|率|转率)/i.test(column.normalized);
+    if (column.mostlyRatioValues && hasExplicitRatioHint) return 100;
+    if (column.mostlyRatioValues && hasGenericRateHint) {
+      return median <= 0.05 ? 100 : 1;
+    }
+    return 1;
   }
 
   function isPercentMetricColumn(column) {
@@ -513,13 +528,11 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       dimensions[field.id] = readValue(row, field.key) || "未标注";
     });
 
-    let hasAggregateAllDimension = false;
-    schema.dimensionFields.forEach(function (field) {
-      if (!hasAggregateAllDimension && isExcludedAggregateDimensionValue(field, dimensions[field.id])) {
-        hasAggregateAllDimension = true;
-      }
-    });
-    if (hasAggregateAllDimension) return null;
+    const aggregateDimensionIds = schema.dimensionFields
+      .filter(function (field) {
+        return isExcludedAggregateDimensionValue(field, dimensions[field.id]);
+      })
+      .map(function (field) { return field.id; });
 
     const explicitGroupType = schema.groupTypeField ? normalizeExplicitGroupType(readValue(row, schema.groupTypeField)) : null;
     const experimentId = schema.experimentField ? readValue(row, schema.experimentField) || "默认实验" : "默认实验";
@@ -531,7 +544,9 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       groupName: groupName,
       groupType: explicitGroupType || schema.inferredGroupTypes[groupName] || "experiment",
       dimensions: dimensions,
-      metrics: baseMetrics
+      metrics: baseMetrics,
+      aggregateDimensionIds: aggregateDimensionIds,
+      hasAggregateDimension: aggregateDimensionIds.length > 0
     };
   }
 
@@ -602,10 +617,10 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     const revenueMetric = pickMetricByHints(baseMetrics, ["revenue", "gmv", "income", "sales", "tradeamt", "amount", "amt", "收益", "营收", "收入", "成交额"]);
 
     if (presetId === "preset_ctr" && clickMetric && exposureMetric) {
-      return "{" + clickMetric.label + "} / {" + exposureMetric.label + "} * 100";
+      return "{" + clickMetric.label + "} / {" + exposureMetric.label + "}";
     }
     if (presetId === "preset_conversion" && orderMetric && uvMetric) {
-      return "{" + orderMetric.label + "} / {" + uvMetric.label + "} * 100";
+      return "{" + orderMetric.label + "} / {" + uvMetric.label + "}";
     }
     if (presetId === "preset_gmv" && revenueMetric) {
       return "{" + revenueMetric.label + "}";
@@ -1128,12 +1143,26 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     };
   }
 
+  function shouldAverageBaseMetric(metric) {
+    if (!metric) return false;
+    if (metric.type === "percent") return true;
+    const normalized = String(metric.normalized || "").toLowerCase();
+    const concept = String(metric.concept || "").toLowerCase();
+    return concept === "arpu" ||
+      concept === "arppu" ||
+      /arpu|arppu|avg|average|mean|均价|客单价|均值/.test(normalized);
+  }
+
   function calculateMetricValue(metric, baseBundle) {
     if (!baseBundle || !baseBundle.hasData) return null;
     if (metric.source !== "base") return null;
     if (!baseBundle.counts[metric.id]) return null;
     const value = baseBundle.totals[metric.id];
-    return Number.isFinite(value) ? value * (metric.multiplier || 1) : null;
+    if (!Number.isFinite(value)) return null;
+    const normalizedValue = shouldAverageBaseMetric(metric)
+      ? value / Math.max(baseBundle.counts[metric.id], 1)
+      : value;
+    return normalizedValue * (metric.multiplier || 1);
   }
 
   function computeMetricValues(schema, baseBundle, contextRows) {
@@ -1187,7 +1216,8 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
           return evaluateVLookup(schema, contextRows, fieldRef, matchValue, metricRef);
         }
       );
-      return Number.isFinite(result) ? result : null;
+      if (!Number.isFinite(result)) return null;
+      return metric.type === "percent" ? result * 100 : result;
     } catch (error) {
       return null;
     }
@@ -1526,6 +1556,60 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     return /(grade|subject|年级|学科)/i.test(fieldIdentity);
   }
 
+  function getAggregateDimensionFieldIds(schema) {
+    if (!schema || !schema.dimensionFields) return [];
+    return schema.dimensionFields
+      .filter(function (field) { return isExcludedAggregateDimensionValue(field, "all"); })
+      .map(function (field) { return field.id; });
+  }
+
+  function isAggregateDimensionValue(value) {
+    return normalizeHeader(value) === "all";
+  }
+
+  function rowHasAggregateDimensionValue(row, aggregateFieldIds) {
+    return (aggregateFieldIds || []).some(function (fieldId) {
+      return isAggregateDimensionValue(row && row.dimensions ? row.dimensions[fieldId] : "");
+    });
+  }
+
+  function rowMatchesAggregateDimensions(row, aggregateFieldIds) {
+    return Boolean((aggregateFieldIds || []).length) && (aggregateFieldIds || []).every(function (fieldId) {
+      return isAggregateDimensionValue(row && row.dimensions ? row.dimensions[fieldId] : "");
+    });
+  }
+
+  function hasSpecificAggregateDimensionFilters(dimensionFilters, aggregateFieldIds) {
+    return (aggregateFieldIds || []).some(function (fieldId) {
+      const selectedValues = dimensionFilters && dimensionFilters[fieldId] ? dimensionFilters[fieldId] : [];
+      return selectedValues.some(function (value) { return !isAggregateDimensionValue(value); });
+    });
+  }
+
+  function selectOverviewRows(rows, schema, dimensionFilters) {
+    const aggregateFieldIds = getAggregateDimensionFieldIds(schema);
+    if (!aggregateFieldIds.length) return rows.slice();
+    if (!hasSpecificAggregateDimensionFilters(dimensionFilters, aggregateFieldIds)) {
+      const aggregateRows = rows.filter(function (row) {
+        return rowMatchesAggregateDimensions(row, aggregateFieldIds);
+      });
+      if (aggregateRows.length) return aggregateRows;
+    }
+    const detailRows = rows.filter(function (row) {
+      return !rowHasAggregateDimensionValue(row, aggregateFieldIds);
+    });
+    return detailRows.length ? detailRows : rows.slice();
+  }
+
+  function selectDimensionBreakdownRows(rows, schema) {
+    const aggregateFieldIds = getAggregateDimensionFieldIds(schema);
+    if (!aggregateFieldIds.length) return rows.slice();
+    const detailRows = rows.filter(function (row) {
+      return !rowHasAggregateDimensionValue(row, aggregateFieldIds);
+    });
+    return detailRows.length ? detailRows : rows.slice();
+  }
+
   function clampTrendZoomScale(value) {
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) return 1;
@@ -1668,7 +1752,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     if (!Number.isFinite(value)) return "--";
     const usePercent = metric && (metric.type === "percent" || isCompareToControlMetric(metric));
     const formatted = usePercent
-      ? numberFormatter.format(value)
+      ? percentFormatter.format(value)
       : (Number.isInteger(value) ? integerFormatter.format(value) : numberFormatter.format(value));
     return usePercent ? formatted + "%" : formatted;
   }
@@ -1793,12 +1877,12 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
 
   function formatMetric(metric, value) {
     if (value === null || value === undefined || Number.isNaN(value)) return "--";
-    return metric.type === "percent" ? numberFormatter.format(value) + "%" : numberFormatter.format(value);
+    return metric.type === "percent" ? percentFormatter.format(value) + "%" : numberFormatter.format(value);
   }
 
   function formatLift(value) {
     if (value === null || value === undefined || Number.isNaN(value)) return "基准";
-    return (value > 0 ? "+" : "") + numberFormatter.format(value) + "%";
+    return (value > 0 ? "+" : "") + percentFormatter.format(value) + "%";
   }
 
   function isCompareToControlMetric(metric) {
@@ -1812,7 +1896,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
 
   function formatCompareMetric(value) {
     if (value === null || value === undefined || Number.isNaN(value)) return "--";
-    return (value > 0 ? "+" : "") + numberFormatter.format(value) + "%";
+    return (value > 0 ? "+" : "") + percentFormatter.format(value) + "%";
   }
 
   function formatTrendMetric(metric, value) {
@@ -1892,14 +1976,16 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
   }
 
   function toggleMetricVisibility(scopeKey, metricId, schema) {
-    const stateKey = scopeKey === "dimension" ? "hiddenDimensionMetrics" : "hiddenSummaryMetrics";
-    const current = state[stateKey] || [];
+    const current = state.hiddenSummaryMetrics || [];
+    let nextHidden;
     if (current.includes(metricId)) {
-      state[stateKey] = current.filter(function (item) { return item !== metricId; });
+      nextHidden = current.filter(function (item) { return item !== metricId; });
     } else {
-      state[stateKey] = current.concat(metricId);
+      nextHidden = current.concat(metricId);
     }
-    const visibleMetrics = getVisibleMetrics(schema, state[stateKey]);
+    state.hiddenSummaryMetrics = nextHidden.slice();
+    state.hiddenDimensionMetrics = nextHidden.slice();
+    const visibleMetrics = getVisibleMetrics(schema, nextHidden);
     if (visibleMetrics.length && !visibleMetrics.some(function (metric) { return metric.id === state.tableSort.metricId; })) {
       state.tableSort.metricId = visibleMetrics[0].id;
       state.tableSort.direction = "desc";
@@ -2046,12 +2132,14 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       ? filterRowsByDateRange(scope.rows, state.dateRange.start, state.dateRange.end)
       : scope.rows;
     const filteredRows = filterRowsByDimensionFilters(dateFilteredRows, state.dimensionFilters);
+    const overviewRows = selectOverviewRows(filteredRows, schema, state.dimensionFilters);
+    const dimensionRows = selectDimensionBreakdownRows(filteredRows, schema);
     const selectedDays = schema.dateField
       ? countDaysInclusive(state.dateRange.start, state.dateRange.end)
       : 1;
 
     const comparisonRows = buildComparisonRows({
-      rows: filteredRows,
+      rows: overviewRows,
       selectedControls: state.selectedControls,
       selectedExperiments: state.selectedExperiments,
       caliber: state.caliber,
@@ -2060,7 +2148,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     });
 
     const trendBundle = buildTrendData({
-      rows: filteredRows,
+      rows: overviewRows,
       selectedControls: state.selectedControls,
       selectedExperiments: state.selectedExperiments,
       schema: schema,
@@ -2068,7 +2156,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     });
 
     const dimensionSections = buildDimensionSections({
-      rows: filteredRows,
+      rows: dimensionRows,
       selectedControls: state.dimensionSelectedControls,
       selectedExperiments: state.dimensionSelectedExperiments,
       caliber: state.caliber,
@@ -2328,7 +2416,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       '<button class="button-ghost" type="button" id="collapseAllDimensionsBtn">全部收起</button></div></div>' +
       renderBreakdownFieldBuilder(schema) +
       renderDimensionGroupEditor(scope) +
-      renderMetricVisibilityToolbar(schema, state.hiddenDimensionMetrics, "dimension", "属性拆解列显示控制") +
+      renderMetricVisibilityToolbar(schema, state.hiddenSummaryMetrics, "dimension", "属性拆解列显示控制") +
       '<div class="accordion-list">' +
       sections.map(function (section) {
         const key = section.key;
@@ -2340,7 +2428,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
           '<div><strong>' + escapeHtml(section.label) + '</strong><div class="muted">' + (open ? "点击收起当前属性组合" : "点击展开当前属性组合") + "</div></div>" +
           "<strong>" + (open ? "−" : "+") + "</strong></button>" +
           (open ? '<div class="accordion-body">' + renderComparisonTable(schema, section.rows, {
-            hiddenMetricIds: state.hiddenDimensionMetrics,
+            hiddenMetricIds: state.hiddenSummaryMetrics,
             tableId: "dimension-table-" + slugify(key),
             exportFileName: "ab-dimension-" + slugify(key),
             exportTitle: section.label + " comparison table"
@@ -2389,13 +2477,13 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
         const active = state.tableSort.metricId === metric.id;
         const arrow = active ? (state.tableSort.direction === "desc" ? "↓" : "↑") : "↕";
         const liftVisible = isLiftColumnVisible(tableId, metric.id);
-        return '<th><div class="metric-head"><button type="button" class="table-sort ' + (active ? "active" : "") + '" data-sort-metric="' + metric.id + '">' + escapeHtml(getMetricDisplayLabel(metric)) + "<span>" + arrow + '</span></button><button type="button" class="cell-lift-toggle ' + (liftVisible ? "active" : "off") + '" data-toggle-lift-column="' + escapeHtml(metric.id) + '" data-table-id="' + escapeHtml(tableId) + '" title="' + (liftVisible ? "隐藏这一列的涨幅比" : "显示这一列的涨幅比") + '">涨幅</button></div></th>';
+        return '<th><div class="metric-head"><button type="button" class="metric-label-toggle ' + (liftVisible ? "active" : "") + '" data-toggle-lift-column="' + escapeHtml(metric.id) + '" data-table-id="' + escapeHtml(tableId) + '" title="' + (liftVisible ? "隐藏这一列的涨幅比" : "显示这一列的涨幅比") + '"><span class="metric-label-text">' + escapeHtml(getMetricDisplayLabel(metric)) + '</span><span class="metric-lift-underline"></span></button><button type="button" class="sort-arrow-button ' + (active ? "active" : "") + '" data-sort-metric="' + metric.id + '" aria-label="sort ' + escapeHtml(metric.id) + '">' + arrow + "</button></div></th>";
       }).join("") +
       "</tr></thead><tbody>" +
       sortedRows.map(function (row) {
         const rowLiftVisible = isLiftRowVisible(tableId, row.key);
         return (
-          '<tr class="' + (row.hasData ? "" : "row-muted") + '"><td class="group-cell sticky-col"><div class="group-cell-head"><strong>' + escapeHtml(row.label) + '</strong><button type="button" class="cell-lift-toggle ' + (rowLiftVisible ? "active" : "off") + '" data-toggle-lift-row="' + escapeHtml(row.key) + '" data-table-id="' + escapeHtml(tableId) + '" title="' + (rowLiftVisible ? "隐藏这一行的涨幅比" : "显示这一行的涨幅比") + '">涨幅</button></div><span class="muted">' +
+          '<tr class="' + (row.hasData ? "" : "row-muted") + '"><td class="group-cell sticky-col"><div class="group-cell-head"><button type="button" class="group-label-toggle ' + (rowLiftVisible ? "active" : "") + '" data-toggle-lift-row="' + escapeHtml(row.key) + '" data-table-id="' + escapeHtml(tableId) + '" title="' + (rowLiftVisible ? "隐藏这一行的涨幅比" : "显示这一行的涨幅比") + '"><span class="group-label-text">' + escapeHtml(row.label) + '</span><span class="metric-lift-underline"></span></button></div><span class="muted">' +
           escapeHtml(row.hasData ? (row.groupType === "control" ? "来源：" + row.sourceGroups.join("、") : "实验组单独展示") : "当前切片下暂无样本") +
           "</span></td>" +
           visibleMetrics.map(function (metric) {
@@ -3346,7 +3434,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
         const filteredRows = schema && schema.dateField
           ? filterRowsByDateRange(scope.rows, state.dateRange.start, state.dateRange.end)
           : scope.rows;
-        const dimensionRows = filterRowsByDimensionFilters(filteredRows, state.dimensionFilters);
+        const dimensionRows = selectDimensionBreakdownRows(filterRowsByDimensionFilters(filteredRows, state.dimensionFilters), schema);
         const keys = buildDimensionSections({
           rows: dimensionRows,
           selectedControls: state.dimensionSelectedControls,
@@ -4149,10 +4237,11 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       '<option value="number"' + (config.type === "number" ? " selected" : "") + '>数值</option>' +
       '<option value="percent"' + (config.type === "percent" ? " selected" : "") + '>百分比</option>' +
       '</select></label></div>' +
-      '<label class="field"><span>计算公式</span><textarea rows="3" data-formula-expression="' + escapeHtml(config.id) + '" placeholder="{订单量} / {UV} * 100 或 VLOOKUP(&quot;学科&quot;, &quot;数学&quot;, &quot;GMV&quot;)">' + escapeHtml(config.formula || "") + "</textarea></label>" +
+      '<label class="field"><span>计算公式</span><textarea rows="3" data-formula-expression="' + escapeHtml(config.id) + '" placeholder="{订单量} / {UV} 或 VLOOKUP(&quot;学科&quot;, &quot;数学&quot;, &quot;GMV&quot;)">' + escapeHtml(config.formula || "") + "</textarea></label>" +
       '<div class="formula-meta">' +
       '<div class="field-note">可引用指标：' + escapeHtml(availableMetricRefs.length ? availableMetricRefs.join(" / ") : "暂无") + "</div>" +
       '<div class="field-note">可查找维度：' + escapeHtml(availableDimensions.length ? availableDimensions.join(" / ") : "暂无") + "</div>" +
+      '<div class="field-note">当展示格式选择百分数时，系统会自动乘 100 并补上 %。</div>' +
       '<div class="field-note">支持 + - * /，也支持 VLOOKUP("维度字段", "匹配值", "返回指标")。</div>' +
       warnings.map(function (warning) {
         return '<div class="field-note error">' + escapeHtml(warning) + "</div>";
@@ -4341,7 +4430,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       const ratio = slice.value / total;
       const endAngle = startAngle + ratio * Math.PI * 2;
       const path = describePieArc(cx, cy, radius, startAngle, endAngle);
-      const arc = '<path d="' + path + '" fill="' + SERIES_COLORS[index % SERIES_COLORS.length] + '" stroke="#f7f3e7" stroke-width="2"><title>' + escapeHtml(slice.label + " | " + formatTrendMetric(metric, slice.value) + " | " + numberFormatter.format(ratio * 100) + "%") + "</title></path>";
+      const arc = '<path d="' + path + '" fill="' + SERIES_COLORS[index % SERIES_COLORS.length] + '" stroke="#f7f3e7" stroke-width="2"><title>' + escapeHtml(slice.label + " | " + formatTrendMetric(metric, slice.value) + " | " + percentFormatter.format(ratio * 100) + "%") + "</title></path>";
       startAngle = endAngle;
       return arc;
     }).join("");
@@ -4355,7 +4444,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       '<foreignObject x="500" y="40" width="370" height="270"><div xmlns="http://www.w3.org/1999/xhtml" class="pie-sidecar">' +
       slices.map(function (slice, index) {
         const ratio = total ? slice.value / total * 100 : 0;
-        return '<div class="pie-legend-item"><span class="dot" style="background:' + SERIES_COLORS[index % SERIES_COLORS.length] + '"></span><strong>' + escapeHtml(slice.label) + '</strong><span>' + escapeHtml(formatTrendMetric(metric, slice.value)) + '</span><small>' + escapeHtml(numberFormatter.format(ratio) + '%') + '</small></div>';
+        return '<div class="pie-legend-item"><span class="dot" style="background:' + SERIES_COLORS[index % SERIES_COLORS.length] + '"></span><strong>' + escapeHtml(slice.label) + '</strong><span>' + escapeHtml(formatTrendMetric(metric, slice.value)) + '</span><small>' + escapeHtml(percentFormatter.format(ratio) + '%') + '</small></div>';
       }).join("") +
       '</div></foreignObject>' +
       "</svg>" +

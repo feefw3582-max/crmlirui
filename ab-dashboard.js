@@ -600,6 +600,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       label: label,
       type: type,
       formula: getDefaultFormulaForPreset(presetId, baseMetrics),
+      roundToInteger: false,
       compareToControl: false,
       selected: presetId !== "preset_confidence",
       isCustom: false
@@ -614,6 +615,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       label: baseMetric.label,
       type: baseMetric.type,
       formula: getDefaultFormulaForExistingMetric(baseMetric, baseMetrics),
+      roundToInteger: false,
       compareToControl: false,
       selected: true,
       isCustom: false,
@@ -633,6 +635,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       label: config.label || (targetMetric ? targetMetric.label : ("自定义统计量" + (index + 1))),
       type: config.type === "percent" ? "percent" : ((targetMetric && targetMetric.type) || "number"),
       formula: String(config.formula || "").trim(),
+      roundToInteger: Boolean(config.roundToInteger),
       compareToControl: Boolean(config.compareToControl),
       selected: config.targetMetricId ? true : config.selected !== false,
       isCustom: Boolean(config.isCustom),
@@ -689,13 +692,22 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
 
     formulaConfigs.forEach(function (config) {
       if (config.targetMetricId) {
-        if (config.useMode !== "formula") return;
         const targetMetric = (baseMetrics || []).find(function (metric) { return metric.id === config.targetMetricId; });
         if (!targetMetric) return;
+        if (config.useMode !== "formula") {
+          overrideMap[targetMetric.id] = Object.assign({}, targetMetric, {
+            label: config.label || targetMetric.label,
+            type: config.type,
+            roundToInteger: Boolean(config.roundToInteger),
+            compareToControl: Boolean(config.compareToControl)
+          });
+          return;
+        }
         if (!config.formula && targetMetric.aggregateDenominatorId && targetMetric.aggregateNumeratorIds && targetMetric.aggregateNumeratorIds.length) {
           overrideMap[targetMetric.id] = Object.assign({}, targetMetric, {
             label: config.label || targetMetric.label,
             type: config.type,
+            roundToInteger: Boolean(config.roundToInteger),
             compareToControl: Boolean(config.compareToControl),
             useAggregateDefinition: true
           });
@@ -713,6 +725,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
           validation: config.validation,
           presetId: config.presetId,
           isCustom: false,
+          roundToInteger: Boolean(config.roundToInteger),
           compareToControl: Boolean(config.compareToControl)
         };
         return;
@@ -728,6 +741,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
         validation: config.validation,
         presetId: config.presetId,
         isCustom: config.isCustom,
+        roundToInteger: Boolean(config.roundToInteger),
         compareToControl: Boolean(config.compareToControl)
       });
     });
@@ -2074,12 +2088,15 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
   function formatAxisMetricValue(metric, value) {
     if (!Number.isFinite(value)) return "--";
     const usePercent = metric && (metric.type === "percent" || isCompareToControlMetric(metric));
+    const roundToInteger = Boolean(metric && metric.roundToInteger);
     const normalizedValue = metric && metric.type === "percent" && !isCompareToControlMetric(metric)
       ? value * 100
       : value;
     const formatted = usePercent
-      ? percentFormatter.format(normalizedValue)
-      : (Number.isInteger(normalizedValue) ? integerFormatter.format(normalizedValue) : numberFormatter.format(normalizedValue));
+      ? (roundToInteger ? integerFormatter.format(Math.round(normalizedValue)) : percentFormatter.format(normalizedValue))
+      : (roundToInteger
+        ? integerFormatter.format(Math.round(normalizedValue))
+        : (Number.isInteger(normalizedValue) ? integerFormatter.format(normalizedValue) : numberFormatter.format(normalizedValue)));
     return usePercent ? formatted + "%" : formatted;
   }
 
@@ -2203,7 +2220,17 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
 
   function formatMetric(metric, value) {
     if (value === null || value === undefined || Number.isNaN(value)) return "--";
-    return metric.type === "percent" ? percentFormatter.format(value * 100) + "%" : numberFormatter.format(value);
+    const roundToInteger = Boolean(metric && metric.roundToInteger);
+    if (metric.type === "percent") {
+      const normalizedValue = value * 100;
+      const formatted = roundToInteger
+        ? integerFormatter.format(Math.round(normalizedValue))
+        : percentFormatter.format(normalizedValue);
+      return formatted + "%";
+    }
+    return roundToInteger
+      ? integerFormatter.format(Math.round(value))
+      : numberFormatter.format(value);
   }
 
   function formatLift(value) {
@@ -2220,14 +2247,19 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     return isCompareToControlMetric(metric) ? metric.label + "（绝对比值）" : metric.label;
   }
 
-  function formatCompareMetric(value) {
+  function formatCompareMetric(value, metric) {
     if (value === null || value === undefined || Number.isNaN(value)) return "--";
-    return (value > 0 ? "+" : "") + percentFormatter.format(value) + "%";
+    const roundToInteger = Boolean(metric && metric.roundToInteger);
+    const absoluteValue = roundToInteger ? Math.round(value) : value;
+    const formatted = roundToInteger
+      ? integerFormatter.format(Math.abs(absoluteValue))
+      : percentFormatter.format(Math.abs(absoluteValue));
+    return (absoluteValue > 0 ? "+" : absoluteValue < 0 ? "-" : "") + formatted + "%";
   }
 
   function formatTrendMetric(metric, value) {
     if (isCompareToControlMetric(metric)) {
-      return formatCompareMetric(value);
+      return formatCompareMetric(value, metric);
     }
     return formatMetric(metric, value);
   }
@@ -2816,7 +2848,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
             const mainValue = getComparisonMetricDisplayValue(metric, row);
             const secondaryInfo = getComparisonMetricSecondaryInfo(metric, row);
             return (
-              "<td><span class=\"metric-main\">" + escapeHtml(isCompareToControlMetric(metric) && row.groupType === "experiment" ? formatCompareMetric(mainValue) : formatMetric(metric, mainValue)) + '</span>' +
+        "<td><span class=\"metric-main\">" + escapeHtml(isCompareToControlMetric(metric) && row.groupType === "experiment" ? formatCompareMetric(mainValue, metric) : formatMetric(metric, mainValue)) + '</span>' +
               (shouldShowLiftBadge(tableId, row.key, metric.id, secondaryInfo) ? '<span class="lift ' + secondaryInfo.className + '">' + escapeHtml(secondaryInfo.text) + "</span>" : "") +
               "</td>"
             );
@@ -3946,6 +3978,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       label: "鑷畾涔夌粺璁￠噺" + nextIndex,
       type: "number",
       formula: "",
+      roundToInteger: false,
       compareToControl: false,
       selected: true,
       isCustom: true,
@@ -3992,7 +4025,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
         return '<div class="field-note error">' + escapeHtml(warning) + "</div>";
       }).join("") +
       "</div>" +
-      '<div class="formula-card-actions"><label class="formula-compare-toggle"><input type="checkbox" data-formula-compare="' + escapeHtml(config.id) + '"' + (config.compareToControl ? " checked" : "") + ' /><span>算环比</span></label></div></article>'
+      '<div class="formula-card-actions"><label class="formula-round-toggle"><input type="checkbox" data-formula-round-integer="' + escapeHtml(config.id) + '"' + (config.roundToInteger ? " checked" : "") + ' /><span>四舍五入取整</span></label><label class="formula-compare-toggle"><input type="checkbox" data-formula-compare="' + escapeHtml(config.id) + '"' + (config.compareToControl ? " checked" : "") + ' /><span>算环比</span></label></div></article>'
     );
   }
 
@@ -4328,6 +4361,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       const labelInput = document.querySelector('[data-formula-label="' + configId + '"]');
       const typeSelect = document.querySelector('[data-formula-type="' + configId + '"]');
       const expressionInput = document.querySelector('[data-formula-expression="' + configId + '"]');
+      const roundInput = document.querySelector('[data-formula-round-integer="' + configId + '"]');
       const compareInput = document.querySelector('[data-formula-compare="' + configId + '"]');
       const useModeSelect = document.querySelector('[data-formula-use-mode="' + configId + '"]');
       const existing = configMap[configId] || {};
@@ -4338,6 +4372,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
         label: labelInput && String(labelInput.value).trim() ? String(labelInput.value).trim() : (existing.label || "鑷畾涔夌粺璁￠噺"),
         type: typeSelect && typeSelect.value === "percent" ? "percent" : "number",
         formula: expressionInput ? String(expressionInput.value || "").trim() : (existing.formula || ""),
+        roundToInteger: roundInput ? Boolean(roundInput.checked) : Boolean(existing.roundToInteger),
         compareToControl: compareInput ? Boolean(compareInput.checked) : Boolean(existing.compareToControl),
         selected: true,
         isCustom: card.getAttribute("data-is-custom") === "true" || existing.isCustom,
@@ -4355,6 +4390,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
         label: config.label,
         type: config.type,
         formula: config.formula,
+        roundToInteger: Boolean(config.roundToInteger),
         compareToControl: Boolean(config.compareToControl),
         selected: config.selected !== false,
         isCustom: Boolean(config.isCustom),
@@ -4549,6 +4585,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       label: "自定义统计量" + nextIndex,
       type: "number",
       formula: "",
+      roundToInteger: false,
       compareToControl: false,
       selected: true,
       isCustom: true,
@@ -4607,7 +4644,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       warnings.map(function (warning) {
         return '<div class="field-note error">' + escapeHtml(warning) + "</div>";
       }).join("") +
-      '</div><div class="formula-card-actions"><label class="formula-compare-toggle"><input type="checkbox" data-formula-compare="' + escapeHtml(config.id) + '"' + (config.compareToControl ? " checked" : "") + ' /><span>算环比</span></label></div></article>'
+      '</div><div class="formula-card-actions"><label class="formula-round-toggle"><input type="checkbox" data-formula-round-integer="' + escapeHtml(config.id) + '"' + (config.roundToInteger ? " checked" : "") + ' /><span>四舍五入取整</span></label><label class="formula-compare-toggle"><input type="checkbox" data-formula-compare="' + escapeHtml(config.id) + '"' + (config.compareToControl ? " checked" : "") + ' /><span>算环比</span></label></div></article>'
     );
   }
 

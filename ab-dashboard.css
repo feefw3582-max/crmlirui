@@ -929,10 +929,12 @@ th {
 .formula-card-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
   margin-top: 12px;
 }
 
-.formula-compare-toggle {
+.formula-compare-toggle,
+.formula-round-toggle {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -946,7 +948,8 @@ th {
   cursor: pointer;
 }
 
-.formula-compare-toggle input {
+.formula-compare-toggle input,
+.formula-round-toggle input {
   margin: 0;
   accent-color: var(--brand);
 }

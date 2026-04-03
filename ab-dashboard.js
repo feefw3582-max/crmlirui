@@ -2043,7 +2043,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       return [0, max];
     }
     const padding = (max - min) * 0.08;
-    return [Math.max(0, min - padding), max + padding];
+    return [min - padding, max + padding];
   }
 
   function collectTrendMetricValues(data, visibleSeriesKeys, metricId) {

@@ -101,6 +101,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     trendChartType: "line",
     trendZoomScale: 1,
     trendMetric: "",
+    uvAggregationMode: "",
     tableSort: { metricId: "", direction: "desc" },
     showLiftBadges: true,
     hiddenLiftRows: [],
@@ -166,6 +167,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       state.dimensionFilters = {};
       state.dimensionFilterFields = [];
       state.trendZoomScale = 1;
+      state.uvAggregationMode = "";
       state.hiddenLiftRows = [];
       state.hiddenLiftColumns = [];
       rebuildFromRawRows();
@@ -862,6 +864,43 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     }), trafficHints);
   }
 
+  function isUvLikeMetric(metric) {
+    const normalized = String(metric && metric.normalized || "").toLowerCase();
+    return !isPaidLikeMetric(metric) &&
+      /(累计进组uv|累计uv|进组uv|activeuv|展现uv|曝光uv|impressionuv|dau|uv|user|users|visitor|visitors|traffic|active)/i.test(normalized);
+  }
+
+  function getRecommendedUvAggregationMode(schema) {
+    if (!schema || !schema.baseMetrics) return "independent";
+    const additiveTrafficMetric = pickTrafficMetric(schema.baseMetrics, false);
+    const cumulativeTrafficMetric = pickMetricByHints((schema.baseMetrics || []).filter(function (metric) {
+      return isUvLikeMetric(metric) && isCumulativeMetric(metric);
+    }), ["累计进组uv", "累计uv", "进组uv", "uv", "user", "users", "visitor", "visitors", "traffic", "active", "展现uv"]);
+    return cumulativeTrafficMetric && !additiveTrafficMetric ? "cumulative" : "independent";
+  }
+
+  function getPreferredUvMetric(schema, mode) {
+    if (!schema || !schema.baseMetrics) return null;
+    const resolvedMode = mode || state.uvAggregationMode || getRecommendedUvAggregationMode(schema);
+    const additiveTrafficMetric = pickTrafficMetric(schema.baseMetrics, false);
+    const cumulativeTrafficMetric = pickMetricByHints((schema.baseMetrics || []).filter(function (metric) {
+      return isUvLikeMetric(metric) && isCumulativeMetric(metric);
+    }), ["累计进组uv", "累计uv", "进组uv", "uv", "user", "users", "visitor", "visitors", "traffic", "active", "展现uv"]);
+    const fallbackTrafficMetric = pickMetricByHints((schema.baseMetrics || []).filter(function (metric) {
+      return isUvLikeMetric(metric);
+    }), ["累计进组uv", "累计uv", "进组uv", "dau", "uv", "user", "users", "visitor", "visitors", "traffic", "active", "展现uv"]);
+
+    if (resolvedMode === "cumulative") {
+      return cumulativeTrafficMetric || fallbackTrafficMetric || additiveTrafficMetric;
+    }
+    return additiveTrafficMetric || fallbackTrafficMetric || cumulativeTrafficMetric;
+  }
+
+  function usesSelectedUvAggregation(metric, schema) {
+    const preferredUvMetric = getPreferredUvMetric(schema);
+    return Boolean(metric && preferredUvMetric && metric.id === preferredUvMetric.id);
+  }
+
   function attachAggregateMetricDefinitions(baseMetrics) {
     const overallUvMetric = pickMetricByHints(baseMetrics, ["累计进组uv", "进组uv", "dau", "uv", "user", "users", "visitor", "visitors", "traffic", "active", "展现uv"]);
     const paidUvMetric = pickMetricByHints(baseMetrics, ["付费uv", "payuv", "paiduv", "付费用户", "支付uv"]);
@@ -1010,6 +1049,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       state.trendChartType = "line";
       state.trendZoomScale = 1;
       state.trendMetric = "";
+      state.uvAggregationMode = "";
       state.tableSort = { metricId: "", direction: "desc" };
       return;
     }
@@ -1030,6 +1070,10 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     const resolvedExperimentId = resolveExperimentId(experimentIds, state.experimentQuery);
     const scope = getExperimentScope(state.records, resolvedExperimentId);
     if (!scope) return;
+
+    if (!["independent", "cumulative"].includes(state.uvAggregationMode)) {
+      state.uvAggregationMode = getRecommendedUvAggregationMode(schema);
+    }
 
     if (schema.dateField) {
       state.dateRange = clampDateRange(state.dateRange.start, state.dateRange.end, scope.minDate, scope.maxDate);
@@ -1206,12 +1250,43 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
         }
       });
     });
+    schema.baseMetrics.forEach(function (metric) {
+      if (!usesSelectedUvAggregation(metric, schema)) return;
+      totals[metric.id] = aggregateSelectedUvMetric(rows, metric);
+    });
     return {
       totals: totals,
       counts: counts,
       hasData: rows.length > 0,
       rowCount: rows.length
     };
+  }
+
+  function aggregateSelectedUvMetric(rows, metric) {
+    if (!rows.length) return 0;
+    const totalsByDate = {};
+
+    rows.forEach(function (row) {
+      const value = row && row.metrics ? row.metrics[metric.id] : null;
+      if (!Number.isFinite(value)) return;
+      const dateKey = row && row.date ? row.date : "__all__";
+      totalsByDate[dateKey] = (totalsByDate[dateKey] || 0) + value;
+    });
+
+    const orderedDates = Object.keys(totalsByDate).sort();
+    if (!orderedDates.length) return 0;
+
+    if (state.uvAggregationMode !== "cumulative") {
+      return orderedDates.reduce(function (sum, dateKey) {
+        return sum + (totalsByDate[dateKey] || 0);
+      }, 0);
+    }
+
+    const lastTotal = totalsByDate[orderedDates[orderedDates.length - 1]] || 0;
+    if (orderedDates.length === 1) return lastTotal;
+    const firstTotal = totalsByDate[orderedDates[0]] || 0;
+    const intervalTotal = lastTotal - firstTotal;
+    return intervalTotal > 0 ? intervalTotal : lastTotal;
   }
 
   function applyCaliber(baseBundle, caliber, days) {
@@ -1679,26 +1754,60 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     });
   }
 
+  function getSpecificAggregateFilterValues(dimensionFilters, fieldId) {
+    return ((dimensionFilters && dimensionFilters[fieldId]) || []).filter(function (value) {
+      return !isAggregateDimensionValue(value);
+    });
+  }
+
   function selectOverviewRows(rows, schema, dimensionFilters) {
     const aggregateFieldIds = getAggregateDimensionFieldIds(schema);
     if (!aggregateFieldIds.length) return rows.slice();
-    if (!hasSpecificAggregateDimensionFilters(dimensionFilters, aggregateFieldIds)) {
-      const aggregateRows = rows.filter(function (row) {
-        return rowMatchesAggregateDimensions(row, aggregateFieldIds);
+
+    const preferredRows = rows.filter(function (row) {
+      return aggregateFieldIds.every(function (fieldId) {
+        const specificSelections = getSpecificAggregateFilterValues(dimensionFilters, fieldId);
+        const value = row && row.dimensions ? row.dimensions[fieldId] : "";
+        return specificSelections.length ? specificSelections.includes(value) : isAggregateDimensionValue(value);
       });
-      if (aggregateRows.length) return aggregateRows;
-    }
+    });
+    if (preferredRows.length) return preferredRows;
+
     const detailRows = rows.filter(function (row) {
-      return !rowHasAggregateDimensionValue(row, aggregateFieldIds);
+      return aggregateFieldIds.every(function (fieldId) {
+        const specificSelections = getSpecificAggregateFilterValues(dimensionFilters, fieldId);
+        const value = row && row.dimensions ? row.dimensions[fieldId] : "";
+        return specificSelections.length ? specificSelections.includes(value) : !isAggregateDimensionValue(value);
+      });
     });
     return detailRows.length ? detailRows : rows.slice();
   }
 
-  function selectDimensionBreakdownRows(rows, schema) {
+  function selectDimensionBreakdownRows(rows, schema, breakdownFieldIds, dimensionFilters) {
     const aggregateFieldIds = getAggregateDimensionFieldIds(schema);
     if (!aggregateFieldIds.length) return rows.slice();
+
+    const preferredRows = rows.filter(function (row) {
+      return aggregateFieldIds.every(function (fieldId) {
+        const specificSelections = getSpecificAggregateFilterValues(dimensionFilters, fieldId);
+        const value = row && row.dimensions ? row.dimensions[fieldId] : "";
+        if ((breakdownFieldIds || []).includes(fieldId)) {
+          return !isAggregateDimensionValue(value);
+        }
+        return specificSelections.length ? specificSelections.includes(value) : isAggregateDimensionValue(value);
+      });
+    });
+    if (preferredRows.length) return preferredRows;
+
     const detailRows = rows.filter(function (row) {
-      return !rowHasAggregateDimensionValue(row, aggregateFieldIds);
+      return aggregateFieldIds.every(function (fieldId) {
+        const specificSelections = getSpecificAggregateFilterValues(dimensionFilters, fieldId);
+        const value = row && row.dimensions ? row.dimensions[fieldId] : "";
+        if ((breakdownFieldIds || []).includes(fieldId)) {
+          return !isAggregateDimensionValue(value);
+        }
+        return specificSelections.length ? specificSelections.includes(value) : !isAggregateDimensionValue(value);
+      });
     });
     return detailRows.length ? detailRows : rows.slice();
   }
@@ -2229,7 +2338,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       : scope.rows;
     const filteredRows = filterRowsByDimensionFilters(dateFilteredRows, state.dimensionFilters);
     const overviewRows = selectOverviewRows(filteredRows, schema, state.dimensionFilters);
-    const dimensionRows = selectDimensionBreakdownRows(filteredRows, schema);
+    const dimensionRows = selectDimensionBreakdownRows(filteredRows, schema, state.breakdownFields, state.dimensionFilters);
     const selectedDays = schema.dateField
       ? countDaysInclusive(state.dateRange.start, state.dateRange.end)
       : 1;
@@ -2726,6 +2835,10 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     return '<button type="button" data-caliber="' + value + '" class="' + (value === activeValue ? "active" : "") + '">' + escapeHtml(label) + "</button>";
   }
 
+  function renderUvAggregationModeButton(value, label, activeValue) {
+    return '<button type="button" data-uv-aggregation-mode="' + value + '" class="' + (value === activeValue ? "active" : "") + '">' + escapeHtml(label) + "</button>";
+  }
+
   function renderBreakdownFieldBuilder(schema) {
     return (
       '<div class="breakdown-builder">' +
@@ -3114,8 +3227,9 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       ? filterRowsByDateRange(scope.rows, state.dateRange.start, state.dateRange.end)
       : scope.rows;
     const filteredRows = filterRowsByDimensionFilters(dateFilteredRows, state.dimensionFilters);
+    const overviewRows = selectOverviewRows(filteredRows, schema, state.dimensionFilters);
     const trendBundle = buildTrendData({
-      rows: filteredRows,
+      rows: overviewRows,
       selectedControls: state.selectedControls,
       selectedExperiments: state.selectedExperiments,
       schema: schema,
@@ -3244,6 +3358,13 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     Array.prototype.forEach.call(document.querySelectorAll("[data-caliber]"), function (button) {
       button.addEventListener("click", function () {
         state.caliber = button.getAttribute("data-caliber");
+        render();
+      });
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll("[data-uv-aggregation-mode]"), function (button) {
+      button.addEventListener("click", function () {
+        state.uvAggregationMode = button.getAttribute("data-uv-aggregation-mode") || getRecommendedUvAggregationMode(state.schema);
         render();
       });
     });
@@ -4056,7 +4177,11 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       '<div class="field"><span>数据口径</span><div class="segment">' +
       renderSegmentButton("summary", "汇总数据", state.caliber) +
       renderSegmentButton("daily_avg", "日均数据", state.caliber) +
-      "</div></div></div>" +
+      '</div><small class="field-note">总表优先使用 ALL 聚合行；分维度表再按具体属性值展开。</small></div>' +
+      '<div class="field"><span>UV 统计方式</span><div class="segment">' +
+      renderUvAggregationModeButton("independent", "独立 UV", state.uvAggregationMode) +
+      renderUvAggregationModeButton("cumulative", "累计 UV", state.uvAggregationMode) +
+      '</div><small class="field-note">当前 UV 字段：' + escapeHtml((getPreferredUvMetric(schema) && getPreferredUvMetric(schema).label) || "未识别") + '。独立 UV 按时间段累加；累计 UV 按末日减首日计算。付费UV不会被当成 UV 分母。</small></div></div>' +
       renderGroupSelectionEditor(scope) +
       renderFormulaEditor(schema) +
       renderDimensionFilterBlocks(schema, dateFilteredRows) +
@@ -4935,7 +5060,9 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     const paidUvMetric = pickAdditiveMetricByHints(baseMetrics, ["付费uv", "payuv", "paiduv", "付费用户", "支付uv"]) ||
       pickMetricByHints(baseMetrics, ["付费uv", "payuv", "paiduv", "付费用户", "支付uv"]);
     const additiveTrafficMetric = pickTrafficMetric(baseMetrics, false);
-    const cumulativeTrafficMetric = pickMetricByHints(baseMetrics, ["累计进组uv", "累计uv", "进组uv", "uv", "user", "users", "visitor", "visitors", "traffic", "active", "展现uv"]);
+    const cumulativeTrafficMetric = pickMetricByHints((baseMetrics || []).filter(function (metric) {
+      return isUvLikeMetric(metric) && isCumulativeMetric(metric);
+    }), ["累计进组uv", "累计uv", "进组uv", "uv", "user", "users", "visitor", "visitors", "traffic", "active", "展现uv"]);
     const genericOrderMetric = pickMetricByHints(baseMetrics, ["订单量", "订单", "order", "orders", "purchase", "pay"]);
     const vipOrderMetric = pickMetricByHints(baseMetrics, ["vip订单量", "vip订单", "viporder", "viporders"]);
     const svipOrderMetric = pickMetricByHints(baseMetrics, ["svip订单量", "svip订单", "sviporder", "sviporders"]);
@@ -4954,7 +5081,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       if (metric.type === "percent") {
         if ((/vipandsvip|vip和svip|vipsvip/.test(normalized) || normalized.includes("和svip")) && (vipOrderMetric || svipOrderMetric)) {
           numeratorMetrics = [vipOrderMetric, svipOrderMetric].filter(Boolean);
-          denominatorCandidates = [paidUvMetric, additiveTrafficMetric, cumulativeTrafficMetric];
+          denominatorCandidates = [additiveTrafficMetric, cumulativeTrafficMetric];
         } else if (metric.concept === "ctr" && clickMetric) {
           numeratorMetrics = [clickMetric];
           denominatorCandidates = [exposureMetric];
@@ -4966,7 +5093,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
           } else if (genericOrderMetric) {
             numeratorMetrics = [genericOrderMetric];
           }
-          denominatorCandidates = [paidUvMetric, additiveTrafficMetric, cumulativeTrafficMetric];
+          denominatorCandidates = [additiveTrafficMetric, cumulativeTrafficMetric];
         }
       } else if (/arppu/.test(normalized) && vipRevenueMetric) {
         numeratorMetrics = [vipRevenueMetric];
@@ -4993,7 +5120,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       next.inferredFitError = bestCandidate.error;
       next.aggregateNumeratorIds = numeratorMetrics.map(function (item) { return item.id; });
 
-      if (!bestCandidate.metric.isCumulative && bestCandidate.error <= 0.05) {
+      if (bestCandidate.error <= 0.05) {
         next.aggregateDenominatorId = bestCandidate.metric.id;
       }
 
@@ -5003,10 +5130,10 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
 
   function getDefaultFormulaForPreset(presetId, baseMetrics) {
     const existingConversionMetric = (baseMetrics || []).find(function (metric) {
-      return metric.aggregateDenominatorId && (metric.concept === "conversion" || /转率|转化率|conversion|cvr/.test(String(metric.normalized || "")));
+      return (metric.aggregateDenominatorId || metric.inferredDenominatorId) && (metric.concept === "conversion" || /转率|转化率|conversion|cvr/.test(String(metric.normalized || "")));
     });
     const existingArpuMetric = (baseMetrics || []).find(function (metric) {
-      return metric.aggregateDenominatorId && (metric.concept === "arpu" || /arpu/.test(String(metric.normalized || "")));
+      return (metric.aggregateDenominatorId || metric.inferredDenominatorId) && (metric.concept === "arpu" || /arpu/.test(String(metric.normalized || "")));
     });
     const clickMetric = pickMetricByHints(baseMetrics, ["click", "clicks", "tap", "taps", "hit", "点击"]);
     const exposureMetric = pickMetricByHints(baseMetrics, ["impression", "impressions", "exposure", "show", "view", "pv", "曝光", "展示", "浏览"]);
@@ -5017,7 +5144,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     }
     if (presetId === "preset_conversion" && existingConversionMetric) {
       const numeratorMetric = (baseMetrics || []).find(function (metric) { return metric.id === existingConversionMetric.aggregateNumeratorIds[0]; });
-      const denominatorMetric = (baseMetrics || []).find(function (metric) { return metric.id === existingConversionMetric.aggregateDenominatorId; });
+      const denominatorMetric = (baseMetrics || []).find(function (metric) { return metric.id === (existingConversionMetric.aggregateDenominatorId || existingConversionMetric.inferredDenominatorId); });
       if (numeratorMetric && denominatorMetric) {
         return "{" + numeratorMetric.label + "} / {" + denominatorMetric.label + "}";
       }
@@ -5027,7 +5154,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     }
     if (presetId === "preset_arpu" && existingArpuMetric) {
       const numeratorMetric = (baseMetrics || []).find(function (metric) { return metric.id === existingArpuMetric.aggregateNumeratorIds[0]; });
-      const denominatorMetric = (baseMetrics || []).find(function (metric) { return metric.id === existingArpuMetric.aggregateDenominatorId; });
+      const denominatorMetric = (baseMetrics || []).find(function (metric) { return metric.id === (existingArpuMetric.aggregateDenominatorId || existingArpuMetric.inferredDenominatorId); });
       if (numeratorMetric && denominatorMetric) {
         return "{" + numeratorMetric.label + "} / {" + denominatorMetric.label + "}";
       }

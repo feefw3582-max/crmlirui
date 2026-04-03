@@ -1213,33 +1213,33 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
 
     const nextControls = state.selectedControls.filter(function (group) {
       return scope.allGroups.includes(group);
-    }).slice(0, 3);
+    });
     const nextExperiments = state.selectedExperiments.filter(function (group) {
       return scope.allGroups.includes(group) && !nextControls.includes(group);
-    }).slice(0, 7);
+    });
 
     const defaultControls = scope.controlGroups.length
-      ? scope.controlGroups.slice(0, Math.min(2, scope.controlGroups.length))
+      ? scope.controlGroups.slice()
       : scope.allGroups.slice(0, 1);
     const defaultExperiments = scope.experimentGroups.length
-      ? scope.experimentGroups.filter(function (group) { return !defaultControls.includes(group); }).slice(0, Math.min(7, scope.experimentGroups.length))
-      : scope.allGroups.filter(function (group) { return !defaultControls.includes(group); }).slice(0, 7);
+      ? scope.experimentGroups.filter(function (group) { return !defaultControls.includes(group); })
+      : scope.allGroups.filter(function (group) { return !defaultControls.includes(group); });
 
     state.selectedControls = nextControls.length ? nextControls : defaultControls;
     state.selectedExperiments = nextExperiments.length ? nextExperiments : defaultExperiments;
     state.dimensionSelectedControls = state.dimensionSelectedControls.filter(function (group) {
       return scope.allGroups.includes(group);
-    }).slice(0, 3);
+    });
     state.dimensionSelectedExperiments = state.dimensionSelectedExperiments.filter(function (group) {
       return scope.allGroups.includes(group) && !state.dimensionSelectedControls.includes(group);
-    }).slice(0, 7);
+    });
     if (!state.dimensionSelectedControls.length) {
-      state.dimensionSelectedControls = state.selectedControls.slice(0, 3);
+      state.dimensionSelectedControls = state.selectedControls.slice();
     }
     if (!state.dimensionSelectedExperiments.length) {
       state.dimensionSelectedExperiments = state.selectedExperiments.filter(function (group) {
         return !state.dimensionSelectedControls.includes(group);
-      }).slice(0, 7);
+      });
     }
 
     schema.dimensionFields.forEach(function (field) {
@@ -3662,11 +3662,9 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
 
   function normalizeGroupSelections(scope) {
     state.selectedControls = unique(state.selectedControls)
-      .filter(function (group) { return scope.allGroups.includes(group); })
-      .slice(0, 3);
+      .filter(function (group) { return scope.allGroups.includes(group); });
     state.selectedExperiments = unique(state.selectedExperiments)
-      .filter(function (group) { return scope.allGroups.includes(group) && !state.selectedControls.includes(group); })
-      .slice(0, 7);
+      .filter(function (group) { return scope.allGroups.includes(group) && !state.selectedControls.includes(group); });
 
     if (!state.selectedControls.length && scope.allGroups.length) {
       state.selectedControls = scope.controlGroups.length ? scope.controlGroups.slice(0, 1) : scope.allGroups.slice(0, 1);
@@ -3680,19 +3678,17 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
 
   function normalizeDimensionGroupSelections(scope) {
     state.dimensionSelectedControls = unique(state.dimensionSelectedControls)
-      .filter(function (group) { return scope.allGroups.includes(group); })
-      .slice(0, 3);
+      .filter(function (group) { return scope.allGroups.includes(group); });
     state.dimensionSelectedExperiments = unique(state.dimensionSelectedExperiments)
-      .filter(function (group) { return scope.allGroups.includes(group) && !state.dimensionSelectedControls.includes(group); })
-      .slice(0, 7);
+      .filter(function (group) { return scope.allGroups.includes(group) && !state.dimensionSelectedControls.includes(group); });
 
     if (!state.dimensionSelectedControls.length) {
-      state.dimensionSelectedControls = state.selectedControls.slice(0, 3);
+      state.dimensionSelectedControls = state.selectedControls.slice();
     }
     if (!state.dimensionSelectedExperiments.length) {
       state.dimensionSelectedExperiments = state.selectedExperiments.filter(function (group) {
         return !state.dimensionSelectedControls.includes(group);
-      }).slice(0, 7);
+      });
     }
   }
 
@@ -3701,17 +3697,15 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       state.dimensionSelectedControls = state.dimensionSelectedControls.filter(function (item) {
         return item !== group;
       });
-      if (!state.dimensionSelectedExperiments.includes(group) && state.dimensionSelectedExperiments.length < 7) {
+      if (!state.dimensionSelectedExperiments.includes(group)) {
         state.dimensionSelectedExperiments = state.dimensionSelectedExperiments.concat(group);
       }
     } else if (state.dimensionSelectedExperiments.includes(group)) {
       state.dimensionSelectedExperiments = state.dimensionSelectedExperiments.filter(function (item) {
         return item !== group;
       });
-    } else if (state.dimensionSelectedControls.length < 3) {
+    } else {
       state.dimensionSelectedControls = state.dimensionSelectedControls.concat(group);
-    } else if (state.dimensionSelectedExperiments.length < 7) {
-      state.dimensionSelectedExperiments = state.dimensionSelectedExperiments.concat(group);
     }
     normalizeDimensionGroupSelections(scope);
     render();
@@ -4202,15 +4196,13 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
         const group = button.getAttribute("data-choose-group");
         if (state.selectedControls.includes(group)) {
           state.selectedControls = state.selectedControls.filter(function (item) { return item !== group; });
-          if (!state.selectedExperiments.includes(group) && state.selectedExperiments.length < 7) {
+          if (!state.selectedExperiments.includes(group)) {
             state.selectedExperiments = state.selectedExperiments.concat(group);
           }
         } else if (state.selectedExperiments.includes(group)) {
           state.selectedExperiments = state.selectedExperiments.filter(function (item) { return item !== group; });
-        } else if (state.selectedControls.length < 3) {
+        } else {
           state.selectedControls = state.selectedControls.concat(group);
-        } else if (state.selectedExperiments.length < 7) {
-          state.selectedExperiments = state.selectedExperiments.concat(group);
         }
         normalizeGroupSelections(scope);
         render();
@@ -4242,8 +4234,8 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
           return;
         }
 
-        state.selectedControls = parsedControls.values.slice(0, 3);
-        state.selectedExperiments = parsedExperiments.values.slice(0, 7);
+        state.selectedControls = parsedControls.values;
+        state.selectedExperiments = parsedExperiments.values;
         normalizeGroupSelections(scope);
         state.error = "";
         render();
@@ -4392,11 +4384,6 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
           return item !== groupName;
         });
       } else {
-        if (state.selectedControls.length >= 3) {
-          state.error = "最多选择 3 个对照组。";
-          render();
-          return;
-        }
         state.selectedControls = state.selectedControls.concat(groupName);
       }
     }
@@ -4412,11 +4399,6 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
           return item !== groupName;
         });
       } else {
-        if (state.selectedExperiments.length >= 7) {
-          state.error = "最多选择 7 个实验组。";
-          render();
-          return;
-        }
         state.selectedExperiments = state.selectedExperiments.concat(groupName);
       }
     }
@@ -6132,6 +6114,67 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
         : "") +
       "</div>"
     );
+  }
+
+  function renderGroupSelectionEditor(scope) {
+    return (
+      '<div class="filter-block"><div class="filter-head"><strong>AB 组角色指定</strong><span class="muted">可直接输入组 ID，也可点击下面标签三态切换（未选 → 对照 → 实验 → 未选）</span></div>' +
+      '<div class="group-editor-grid">' +
+      '<label class="field"><span>对照组</span><textarea id="controlGroupsInput" rows="3" placeholder="例如：33782,33783">' + escapeHtml(state.selectedControls.join(", ")) + '</textarea><small class="field-note">至少保留 1 个，不设数量上限。多对照组会先聚合基础指标，再重算转化率等复合指标。</small></label>' +
+      '<label class="field"><span>实验组</span><textarea id="experimentGroupsInput" rows="3" placeholder="例如：110,108">' + escapeHtml(state.selectedExperiments.join(", ")) + '</textarea><small class="field-note">至少保留 1 个，不设数量上限。一个组不能同时属于对照组和实验组。</small></label>' +
+      '</div><div class="button-row" style="margin-top:10px;"><button type="button" class="button-ghost" id="applyGroupSelectionBtn">应用组角色</button></div>' +
+      '<div class="group-chooser"><div class="muted" style="margin-bottom:8px;">当前实验的全部分组</div><div class="pill-row">' +
+      scope.allGroups.map(function (group) {
+        return renderGroupChooserPill(group);
+      }).join("") +
+      "</div></div></div>"
+    );
+  }
+
+  function toggleGroup(groupType, groupName) {
+    state.error = "";
+
+    if (groupType === "control") {
+      if (state.selectedControls.includes(groupName)) {
+        if (state.selectedControls.length === 1) {
+          state.error = "至少保留 1 个对照组。";
+          render();
+          return;
+        }
+        state.selectedControls = state.selectedControls.filter(function (item) {
+          return item !== groupName;
+        });
+      } else {
+        state.selectedControls = state.selectedControls.concat(groupName);
+      }
+    }
+
+    if (groupType === "experiment") {
+      if (state.selectedExperiments.includes(groupName)) {
+        if (state.selectedExperiments.length === 1) {
+          state.error = "至少保留 1 个实验组。";
+          render();
+          return;
+        }
+        state.selectedExperiments = state.selectedExperiments.filter(function (item) {
+          return item !== groupName;
+        });
+      } else {
+        state.selectedExperiments = state.selectedExperiments.concat(groupName);
+      }
+    }
+
+    const scope = getExperimentScope(state.records, resolveExperimentId(getExperimentIds(state.records), state.experimentQuery));
+    if (scope) {
+      normalizeGroupSelections(scope);
+    }
+    const validSeries = ["control_merged"].concat(state.selectedExperiments.map(function (group) {
+      return "experiment:" + group;
+    }));
+    state.hiddenSeries = state.hiddenSeries.filter(function (key) {
+      return validSeries.includes(key);
+    });
+    render();
   }
 
   if (typeof window !== "undefined") {

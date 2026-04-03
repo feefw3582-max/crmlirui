@@ -67,6 +67,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
   const numberFormatter = new Intl.NumberFormat("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const percentFormatter = new Intl.NumberFormat("zh-CN", { minimumFractionDigits: 4, maximumFractionDigits: 4 });
   const integerFormatter = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 });
+  const DEFAULT_AUTO_VISIBLE_METRIC_HINTS = /(uv|dau|gmv|arpu|arppu|conversion|cvr|转|杞寲)/i;
 
   const dom = {
     appRoot: document.getElementById("appRoot"),
@@ -112,10 +113,14 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     dimensionSelectedExperiments: [],
     hiddenSummaryMetrics: [],
     hiddenDimensionMetrics: [],
+    metricOrder: [],
+    metricVisibilitySignature: "",
     dimensionFilterFields: [],
     dimensionFilters: {},
     openDimensions: [],
     hiddenSeries: [],
+    metricDragSourceId: "",
+    metricDragDidMove: false,
     formulaOverrides: [],
     customMetricCounter: 1,
     fieldOverrides: {
@@ -166,6 +171,8 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       state.formulaOverrides = [];
       state.dimensionFilters = {};
       state.dimensionFilterFields = [];
+      state.metricOrder = [];
+      state.metricVisibilitySignature = "";
       state.trendZoomScale = 1;
       state.uvAggregationMode = "";
       state.hiddenLiftRows = [];
@@ -1148,9 +1155,13 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       state.dimensionFilterFields = [];
       state.hiddenSummaryMetrics = [];
       state.hiddenDimensionMetrics = [];
+      state.metricOrder = [];
+      state.metricVisibilitySignature = "";
       state.dimensionFilters = {};
       state.openDimensions = [];
       state.hiddenSeries = [];
+      state.metricDragSourceId = "";
+      state.metricDragDidMove = false;
       state.trendXAxis = "date";
       state.trendChartType = "line";
       state.trendZoomScale = 1;
@@ -1235,13 +1246,22 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       state.dimensionFilterFields = schema.dimensionFields.map(function (field) { return field.id; }).slice(0, Math.min(3, schema.dimensionFields.length));
     }
 
-    const nextMetricIds = schema.metrics.map(function (metric) { return metric.id; });
-    state.hiddenSummaryMetrics = state.hiddenSummaryMetrics.filter(function (metricId) {
-      return nextMetricIds.includes(metricId);
-    });
-    state.hiddenDimensionMetrics = state.hiddenDimensionMetrics.filter(function (metricId) {
-      return nextMetricIds.includes(metricId);
-    });
+    ensureMetricOrder(schema);
+    const nextMetricIds = getMetricsInConfiguredOrder(schema).map(function (metric) { return metric.id; });
+    const nextMetricSignature = nextMetricIds.join("|");
+    if (state.metricVisibilitySignature !== nextMetricSignature) {
+      const defaultHiddenMetricIds = getDefaultHiddenMetricIds(schema);
+      state.hiddenSummaryMetrics = defaultHiddenMetricIds.slice();
+      state.hiddenDimensionMetrics = defaultHiddenMetricIds.slice();
+      state.metricVisibilitySignature = nextMetricSignature;
+    } else {
+      state.hiddenSummaryMetrics = state.hiddenSummaryMetrics.filter(function (metricId) {
+        return nextMetricIds.includes(metricId);
+      });
+      state.hiddenDimensionMetrics = state.hiddenDimensionMetrics.filter(function (metricId) {
+        return nextMetricIds.includes(metricId);
+      });
+    }
     if (!state.trendMetric || !nextMetricIds.includes(state.trendMetric)) {
       state.trendMetric = nextMetricIds[0] || "";
     }
@@ -1253,8 +1273,9 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       state.trendChartType = "line";
     }
     state.trendZoomScale = clampTrendZoomScale(state.trendZoomScale);
-    if (!state.tableSort.metricId || !nextMetricIds.includes(state.tableSort.metricId)) {
-      state.tableSort.metricId = nextMetricIds[0] || "";
+    const visibleMetricIds = getVisibleMetrics(schema, state.hiddenSummaryMetrics).map(function (metric) { return metric.id; });
+    if (!state.tableSort.metricId || !visibleMetricIds.includes(state.tableSort.metricId)) {
+      state.tableSort.metricId = visibleMetricIds[0] || nextMetricIds[0] || "";
       state.tableSort.direction = "desc";
     }
     state.formulaOverrides = schema.formulaMetricConfigs || state.formulaOverrides;
@@ -2313,20 +2334,97 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       .replace(/'/g, "&#39;");
   }
 
+  function getMetricSearchText(metric) {
+    const raw = [metric.label, metric.id, metric.key, metric.normalized].filter(Boolean).join(" ");
+    return {
+      rawLower: raw.toLowerCase(),
+      normalized: normalizeHeader(raw)
+    };
+  }
+
+  function isAutoVisibleMetric(metric) {
+    if (!metric) return false;
+    const searchText = getMetricSearchText(metric);
+    return DEFAULT_AUTO_VISIBLE_METRIC_HINTS.test(searchText.rawLower) || DEFAULT_AUTO_VISIBLE_METRIC_HINTS.test(searchText.normalized);
+  }
+
+  function getMetricKeywordPriority(metric) {
+    const searchText = getMetricSearchText(metric);
+    if (/(dau|uv|traffic|user|visitor)/i.test(searchText.rawLower) || /(dau|uv|traffic|user|visitor)/i.test(searchText.normalized)) return 0;
+    if (/(gmv|revenue|income|sales|trade|amt|amount)/i.test(searchText.rawLower) || /(gmv|revenue|income|sales|trade|amt|amount)/i.test(searchText.normalized)) return 1;
+    if (/(arpu|arppu)/i.test(searchText.rawLower) || /(arpu|arppu)/i.test(searchText.normalized)) return 2;
+    if (/(order|pay|purchase)/i.test(searchText.rawLower) || /(order|pay|purchase)/i.test(searchText.normalized)) return 3;
+    return 9;
+  }
+
+  function getMetricDefaultRank(metric) {
+    const category = isCompareToControlMetric(metric) ? 3 : (metric.type === "percent" ? 2 : 1);
+    return category * 100 + getMetricKeywordPriority(metric);
+  }
+
+  function sortMetricsByDefaultPriority(metrics) {
+    return (metrics || []).slice().sort(function (left, right) {
+      const rankDiff = getMetricDefaultRank(left) - getMetricDefaultRank(right);
+      if (rankDiff !== 0) return rankDiff;
+      return collator.compare(String(left.label || ""), String(right.label || ""));
+    });
+  }
+
+  function ensureMetricOrder(schema) {
+    if (!schema || !schema.metrics) {
+      state.metricOrder = [];
+      return;
+    }
+    const metricIds = schema.metrics.map(function (metric) { return metric.id; });
+    const metricIdSet = new Set(metricIds);
+    const baseOrder = (state.metricOrder || []).filter(function (metricId, index, array) {
+      return metricIdSet.has(metricId) && array.indexOf(metricId) === index;
+    });
+    const rest = sortMetricsByDefaultPriority(schema.metrics.filter(function (metric) {
+      return !baseOrder.includes(metric.id);
+    })).map(function (metric) {
+      return metric.id;
+    });
+    state.metricOrder = baseOrder.concat(rest);
+  }
+
+  function getMetricsInConfiguredOrder(schema) {
+    ensureMetricOrder(schema);
+    const orderMap = new Map((state.metricOrder || []).map(function (metricId, index) {
+      return [metricId, index];
+    }));
+    return (schema.metrics || []).slice().sort(function (left, right) {
+      const leftIndex = orderMap.has(left.id) ? orderMap.get(left.id) : Number.MAX_SAFE_INTEGER;
+      const rightIndex = orderMap.has(right.id) ? orderMap.get(right.id) : Number.MAX_SAFE_INTEGER;
+      if (leftIndex !== rightIndex) return leftIndex - rightIndex;
+      return collator.compare(String(left.label || ""), String(right.label || ""));
+    });
+  }
+
+  function getDefaultHiddenMetricIds(schema) {
+    const autoVisibleMetricIds = new Set((schema.metrics || []).filter(isAutoVisibleMetric).map(function (metric) {
+      return metric.id;
+    }));
+    return getMetricsInConfiguredOrder(schema)
+      .map(function (metric) { return metric.id; })
+      .filter(function (metricId) { return !autoVisibleMetricIds.has(metricId); });
+  }
+
   function getVisibleMetrics(schema, hiddenMetricIds) {
     const hiddenSet = new Set(hiddenMetricIds || []);
-    return schema.metrics.filter(function (metric) {
+    return getMetricsInConfiguredOrder(schema).filter(function (metric) {
       return !hiddenSet.has(metric.id);
     });
   }
 
   function renderMetricVisibilityToolbar(schema, hiddenMetricIds, scopeKey, title) {
+    const orderedMetrics = getMetricsInConfiguredOrder(schema);
     const visibleCount = getVisibleMetrics(schema, hiddenMetricIds).length;
     return (
       '<div class="filter-block compact-block"><div class="filter-head"><strong>' + escapeHtml(title) + '</strong><span class="muted">' +
       escapeHtml(visibleCount ? ("当前显示 " + visibleCount + " 列") : "当前已隐藏全部统计列") +
       '</span></div><div class="pill-row">' +
-      schema.metrics.map(function (metric) {
+      orderedMetrics.map(function (metric) {
         const hidden = (hiddenMetricIds || []).includes(metric.id);
         return '<button type="button" class="pill metric-visibility-pill ' + (hidden ? "" : "selected control") + '" data-toggle-metric-visibility="' + escapeHtml(scopeKey) + '" data-metric-id="' + escapeHtml(metric.id) + '">' + escapeHtml(metric.label + (hidden ? " · 已隐藏" : " · 显示中")) + "</button>";
       }).join("") +
@@ -3588,10 +3686,45 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
 
     Array.prototype.forEach.call(document.querySelectorAll("[data-toggle-metric-visibility]"), function (button) {
       button.addEventListener("click", function () {
+        if (state.metricDragDidMove) {
+          state.metricDragDidMove = false;
+          return;
+        }
         const scopeKey = button.getAttribute("data-toggle-metric-visibility");
         const metricId = button.getAttribute("data-metric-id");
         toggleMetricVisibility(scopeKey, metricId, state.schema);
         render();
+      });
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll("[data-metric-drag-id]"), function (button) {
+      button.addEventListener("dragstart", function (event) {
+        state.metricDragSourceId = button.getAttribute("data-metric-drag-id") || "";
+        state.metricDragDidMove = false;
+        button.classList.add("dragging");
+        if (event.dataTransfer) {
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("text/plain", state.metricDragSourceId);
+        }
+      });
+
+      button.addEventListener("dragover", function (event) {
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+      });
+
+      button.addEventListener("drop", function (event) {
+        event.preventDefault();
+        const targetMetricId = button.getAttribute("data-metric-drag-id") || "";
+        if (moveMetricOrder(state.metricDragSourceId, targetMetricId, state.schema)) {
+          state.metricDragDidMove = true;
+          render();
+        }
+      });
+
+      button.addEventListener("dragend", function () {
+        state.metricDragSourceId = "";
+        button.classList.remove("dragging");
       });
     });
 
@@ -5516,6 +5649,36 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       return "";
     }
     return "";
+  }
+
+  function renderMetricVisibilityToolbar(schema, hiddenMetricIds, scopeKey, title) {
+    const orderedMetrics = getMetricsInConfiguredOrder(schema);
+    const visibleCount = getVisibleMetrics(schema, hiddenMetricIds).length;
+    return (
+      '<div class="filter-block compact-block"><div class="filter-head"><strong>' + escapeHtml(title) + '</strong><span class="muted">' +
+      escapeHtml(visibleCount ? ("Showing " + visibleCount + " columns") : "All metrics hidden") +
+      '</span></div><div class="pill-row">' +
+      orderedMetrics.map(function (metric) {
+        const hidden = (hiddenMetricIds || []).includes(metric.id);
+        return '<button type="button" class="pill metric-visibility-pill ' + (hidden ? "" : "selected control") + '" draggable="true" data-metric-drag-id="' + escapeHtml(metric.id) + '" data-toggle-metric-visibility="' + escapeHtml(scopeKey) + '" data-metric-id="' + escapeHtml(metric.id) + '">' + escapeHtml(metric.label + (hidden ? " · hidden" : " · shown")) + "</button>";
+      }).join("") +
+      "</div></div>"
+    );
+  }
+
+  function moveMetricOrder(draggedMetricId, targetMetricId, schema) {
+    if (!draggedMetricId || !targetMetricId || draggedMetricId === targetMetricId || !schema) return false;
+    ensureMetricOrder(schema);
+    const metricIdSet = new Set((schema.metrics || []).map(function (metric) { return metric.id; }));
+    if (!metricIdSet.has(draggedMetricId) || !metricIdSet.has(targetMetricId)) return false;
+    const ordered = (state.metricOrder || []).filter(function (metricId) {
+      return metricIdSet.has(metricId) && metricId !== draggedMetricId;
+    });
+    const targetIndex = ordered.indexOf(targetMetricId);
+    if (targetIndex < 0) return false;
+    ordered.splice(targetIndex, 0, draggedMetricId);
+    state.metricOrder = ordered;
+    return true;
   }
 
   if (typeof window !== "undefined") {

@@ -553,11 +553,18 @@ code {
 
 .metric-visibility-pill {
   transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease;
+  cursor: grab;
+  user-select: none;
 }
 
 .metric-visibility-pill:hover {
   transform: translateY(-1px);
   box-shadow: 0 8px 18px rgba(29, 59, 79, 0.1);
+}
+
+.metric-visibility-pill.dragging {
+  opacity: 0.7;
+  cursor: grabbing;
 }
 
 .pill.selected.control {

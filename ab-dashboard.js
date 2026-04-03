@@ -842,11 +842,20 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     }), hints);
   }
 
+  function isPaidLikeMetric(metric) {
+    const normalized = String(metric && metric.normalized || "").toLowerCase();
+    return /(付费|支付|paid|payment|payuv|payuser|付费用户)/i.test(normalized);
+  }
+
   function pickTrafficMetric(metrics, includeCumulativeFallback) {
     const trafficHints = ["dau", "activeuv", "active", "traffic", "展现uv", "曝光uv", "impressionuv", "uv", "user", "users", "visitor", "visitors", "曝光", "展现", "view", "impression", "pv"];
-    const additiveMetric = pickAdditiveMetricByHints(metrics, trafficHints);
+    const additiveMetric = pickMetricByHints((metrics || []).filter(function (metric) {
+      return !isCumulativeMetric(metric) && !isPaidLikeMetric(metric);
+    }), trafficHints);
     if (additiveMetric || includeCumulativeFallback === false) return additiveMetric;
-    return pickMetricByHints(metrics, trafficHints);
+    return pickMetricByHints((metrics || []).filter(function (metric) {
+      return !isPaidLikeMetric(metric);
+    }), trafficHints);
   }
 
   function attachAggregateMetricDefinitions(baseMetrics) {
@@ -4767,11 +4776,10 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
   function getDefaultFormulaForPreset(presetId, baseMetrics) {
     const orderMetric = pickMetricByHints(baseMetrics, ["order", "orders", "ordercount", "purchase", "pay", "订单", "成交", "转化"]);
     const additiveTrafficMetric = pickTrafficMetric(baseMetrics, false);
-    const fallbackTrafficMetric = pickTrafficMetric(baseMetrics, true);
     const clickMetric = pickMetricByHints(baseMetrics, ["click", "clicks", "tap", "taps", "hit", "点击"]);
     const exposureMetric = pickMetricByHints(baseMetrics, ["impression", "impressions", "exposure", "show", "view", "pv", "曝光", "展示", "浏览"]);
     const revenueMetric = pickMetricByHints(baseMetrics, ["revenue", "gmv", "income", "sales", "tradeamt", "amount", "amt", "收益", "营收", "收入", "成交额"]);
-    const trafficMetric = additiveTrafficMetric || fallbackTrafficMetric;
+    const trafficMetric = additiveTrafficMetric;
 
     if (presetId === "preset_ctr" && clickMetric && exposureMetric) {
       return "{" + clickMetric.label + "} / {" + exposureMetric.label + "}";

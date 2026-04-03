@@ -2287,8 +2287,11 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
   }
 
   function getComparisonMetricDisplayValue(metric, row) {
-    if (isCompareToControlMetric(metric) && row.groupType === "experiment") {
-      return row.lifts[metric.id];
+    if (isCompareToControlMetric(metric)) {
+      if (row.groupType === "experiment") {
+        return row.lifts[metric.id];
+      }
+      return 0;
     }
     return row.values[metric.id];
   }
@@ -2947,7 +2950,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
             const mainValue = getComparisonMetricDisplayValue(metric, row);
             const secondaryInfo = getComparisonMetricSecondaryInfo(metric, row);
             return (
-        "<td><span class=\"metric-main\">" + escapeHtml(isCompareToControlMetric(metric) && row.groupType === "experiment" ? formatCompareMetric(mainValue, metric) : formatMetric(metric, mainValue)) + '</span>' +
+        "<td><span class=\"metric-main\">" + escapeHtml(isCompareToControlMetric(metric) ? formatCompareMetric(mainValue, metric) : formatMetric(metric, mainValue)) + '</span>' +
               (shouldShowLiftBadge(tableId, row.key, metric.id, secondaryInfo) ? '<span class="lift ' + secondaryInfo.className + '">' + escapeHtml(secondaryInfo.text) + "</span>" : "") +
               "</td>"
             );

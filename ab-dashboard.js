@@ -1248,7 +1248,11 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
 
     ensureMetricOrder(schema);
     const nextMetricIds = getMetricsInConfiguredOrder(schema).map(function (metric) { return metric.id; });
-    const nextMetricSignature = nextMetricIds.join("|");
+    const nextMetricSignature = (schema.metrics || [])
+      .map(function (metric) { return metric.id; })
+      .slice()
+      .sort(collator.compare)
+      .join("|");
     if (state.metricVisibilitySignature !== nextMetricSignature) {
       const defaultHiddenMetricIds = getDefaultHiddenMetricIds(schema);
       state.hiddenSummaryMetrics = defaultHiddenMetricIds.slice();

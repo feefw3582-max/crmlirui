@@ -336,6 +336,35 @@ code {
   margin-bottom: 18px;
 }
 
+.column-profile-block {
+  margin-bottom: 18px;
+  border: 1px dashed rgba(29, 59, 79, 0.22);
+  border-radius: 18px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.52);
+}
+
+.column-profile-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 0;
+  background: transparent;
+  padding: 4px 2px;
+  text-align: left;
+  cursor: default;
+}
+
+.column-profile-toggle strong {
+  font-size: 14px;
+}
+
+.column-profile-block.expanded .column-profile-toggle {
+  margin-bottom: 8px;
+}
+
 .dimension-filter-card,
 .formula-card,
 .group-chooser {
@@ -646,12 +675,25 @@ code {
   min-width: 240px;
 }
 
-.dimension-board-value.negative {
-  color: #b44242;
+.dimension-board-value.dimension-board-heat-1 {
+  color: #f5b8b8;
 }
 
-.dimension-board-value.positive {
-  color: #126d61;
+.dimension-board-value.dimension-board-heat-2 {
+  color: #ef8f8f;
+}
+
+.dimension-board-value.dimension-board-heat-3 {
+  color: #e05f5f;
+}
+
+.dimension-board-value.dimension-board-heat-4 {
+  color: #c73b3b;
+}
+
+.dimension-board-value.dimension-board-heat-5 {
+  color: #9f1f1f;
+  font-weight: 800;
 }
 
 .dimension-board-note {

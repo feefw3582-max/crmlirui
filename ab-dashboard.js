@@ -70,6 +70,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
   const percentFormatter3 = new Intl.NumberFormat("zh-CN", { minimumFractionDigits: 3, maximumFractionDigits: 3 });
   const integerFormatter = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 });
   const DEFAULT_AUTO_VISIBLE_METRIC_HINTS = /(uv|dau|gmv|arpu|arppu|conversion|cvr|转|杞寲)/i;
+  const SUMMARY_TABLE_ID = "summary-comparison-table";
 
   const dom = {
     appRoot: document.getElementById("appRoot"),
@@ -128,6 +129,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     metricDragDidMove: false,
     formulaOverrides: [],
     collapsedFormulaCards: {},
+    columnProfileExpanded: false,
     customMetricCounter: 1,
     fieldOverrides: {
       experimentField: "",
@@ -1171,6 +1173,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       state.hiddenSeries = [];
       state.metricDragSourceId = "";
       state.metricDragDidMove = false;
+      state.columnProfileExpanded = false;
       state.trendXAxis = "date";
       state.trendChartType = "line";
       state.trendZoomScale = 1;
@@ -2521,12 +2524,26 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     }
   }
 
-  function shouldShowLiftBadge(tableId, rowKey, metricId, secondaryInfo) {
+  function shouldShowLiftForRowMetric(tableId, rowKey, metricId) {
     return Boolean(
       state.showLiftBadges &&
-      secondaryInfo &&
+      tableId &&
+      rowKey &&
+      metricId &&
       isLiftRowVisible(tableId, rowKey) &&
       isLiftColumnVisible(tableId, metricId)
+    );
+  }
+
+  function shouldShowLiftForSummaryTrend(metricId, rowKey) {
+    return shouldShowLiftForRowMetric(SUMMARY_TABLE_ID, rowKey, metricId);
+  }
+
+  function shouldShowLiftBadge(tableId, rowKey, metricId, secondaryInfo) {
+    return Boolean(
+      shouldShowLiftForRowMetric(tableId, rowKey, metricId) &&
+      secondaryInfo &&
+      secondaryInfo.text
     );
   }
 
@@ -2819,7 +2836,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       renderMetricVisibilityToolbar(schema, state.hiddenSummaryMetrics, "summary", "核心对比列显示控制") +
       renderComparisonTable(schema, comparisonRows, {
         hiddenMetricIds: state.hiddenSummaryMetrics,
-        tableId: "summary-comparison-table",
+        tableId: SUMMARY_TABLE_ID,
         exportFileName: "ab-summary-table",
         exportTitle: "Summary comparison table"
       }) +
@@ -2981,7 +2998,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       "</div>" +
       '<div class="button-row"><button type="button" class="button-ghost mini' + (mode === "total" ? " active" : "") + '" data-dimension-board-mode="total">总大盘</button><button type="button" class="button-ghost mini' + (mode === "row" ? " active" : "") + '" data-dimension-board-mode="row">行大盘</button></div>' +
       "</div>" +
-      renderDimensionBoardTable(selectedMetrics, boardRows, mode) +
+      renderDimensionBoardTableAdvanced(selectedMetrics, boardRows, mode) +
       "</div>"
     );
   }
@@ -3031,6 +3048,116 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       "</tbody></table></div>" +
       '<div class="field-note dimension-board-note">' + (mode === "row" ? "行大盘：每行各列占比合计约为 100%（保留三位小数）" : "总大盘：全表所有格子占比合计约为 100%（保留三位小数）") + "</div>"
     );
+  }
+
+  function renderDimensionBoardTableAdvanced(metrics, rows, mode) {
+    if (!metrics.length) {
+      return '<div class="empty inline-empty"><div><strong>先拖入要分析的列</strong><p class="muted">可拖入多个列，拖入后会按当前维度组合生成百分比分布大盘。</p></div></div>';
+    }
+    if (!rows.length) {
+      return '<div class="empty inline-empty"><div><strong>当前维度下暂无可计算数据</strong><p class="muted">可调整日期、组别或维度筛选后重试。</p></div></div>';
+    }
+
+    const sortedRows = rows.slice().sort(function (left, right) {
+      return collator.compare(left.label, right.label);
+    });
+    const totalDenominator = sortedRows.reduce(function (sum, row) {
+      return sum + metrics.reduce(function (metricSum, metric) {
+        const value = row.values[metric.id];
+        return metricSum + (Number.isFinite(value) ? value : 0);
+      }, 0);
+    }, 0);
+    const ratioGrid = sortedRows.map(function (row) {
+      const rowDenominator = metrics.reduce(function (sum, metric) {
+        const value = row.values[metric.id];
+        return sum + (Number.isFinite(value) ? value : 0);
+      }, 0);
+      return metrics.map(function (metric) {
+        const rawValue = Number.isFinite(row.values[metric.id]) ? row.values[metric.id] : 0;
+        const denominator = mode === "row" ? rowDenominator : totalDenominator;
+        return Number.isFinite(denominator) && denominator !== 0
+          ? (rawValue / denominator) * 100
+          : null;
+      });
+    });
+    const heatClassMap = buildDimensionBoardHeatClassMapAdvanced(ratioGrid, mode);
+
+    return (
+      '<div class="table-wrap"><table class="dimension-board-table"><thead><tr><th class="sticky-col">维度组合</th>' +
+      metrics.map(function (metric) {
+        return '<th>' + escapeHtml(getMetricDisplayLabel(metric)) + "</th>";
+      }).join("") +
+      "</tr></thead><tbody>" +
+      sortedRows.map(function (row, rowIndex) {
+        return (
+          '<tr><td class="sticky-col dimension-board-row-label">' + escapeHtml(row.label) + "</td>" +
+          metrics.map(function (_, metricIndex) {
+            const ratio = ratioGrid[rowIndex][metricIndex];
+            const heatClass = heatClassMap[getDimensionBoardCellKeyAdvanced(rowIndex, metricIndex)] || "dimension-board-heat-1";
+            return '<td class="dimension-board-value ' + heatClass + '">' + escapeHtml(formatDimensionBoardPercent(ratio)) + "</td>";
+          }).join("") +
+          "</tr>"
+        );
+      }).join("") +
+      "</tbody></table></div>" +
+      '<div class="field-note dimension-board-note">' + (mode === "row" ? "行大盘：每行内按占比均分到 5 档红色热力（保留三位小数）" : "总大盘：全表按占比均分到 5 档红色热力（保留三位小数）") + "</div>"
+    );
+  }
+
+  function getDimensionBoardCellKeyAdvanced(rowIndex, metricIndex) {
+    return String(rowIndex) + "::" + String(metricIndex);
+  }
+
+  function assignBalancedHeatBucketsAdvanced(items) {
+    const bucketCount = 5;
+    const sorted = items.slice().sort(function (left, right) {
+      return left.value - right.value;
+    });
+    if (!sorted.length) return [];
+    const baseSize = Math.floor(sorted.length / bucketCount);
+    const remainder = sorted.length % bucketCount;
+    let cursor = 0;
+    for (let bucket = 0; bucket < bucketCount; bucket += 1) {
+      const size = baseSize + (bucket < remainder ? 1 : 0);
+      for (let index = 0; index < size && cursor < sorted.length; index += 1) {
+        sorted[cursor].bucket = bucket + 1;
+        cursor += 1;
+      }
+    }
+    while (cursor < sorted.length) {
+      sorted[cursor].bucket = bucketCount;
+      cursor += 1;
+    }
+    return sorted;
+  }
+
+  function buildDimensionBoardHeatClassMapAdvanced(ratioGrid, mode) {
+    const classMap = {};
+    if (mode === "row") {
+      ratioGrid.forEach(function (rowValues, rowIndex) {
+        const rowItems = rowValues
+          .map(function (value, metricIndex) {
+            return Number.isFinite(value) ? { rowIndex: rowIndex, metricIndex: metricIndex, value: value } : null;
+          })
+          .filter(Boolean);
+        assignBalancedHeatBucketsAdvanced(rowItems).forEach(function (item) {
+          classMap[getDimensionBoardCellKeyAdvanced(item.rowIndex, item.metricIndex)] = "dimension-board-heat-" + item.bucket;
+        });
+      });
+      return classMap;
+    }
+
+    const allItems = [];
+    ratioGrid.forEach(function (rowValues, rowIndex) {
+      rowValues.forEach(function (value, metricIndex) {
+        if (!Number.isFinite(value)) return;
+        allItems.push({ rowIndex: rowIndex, metricIndex: metricIndex, value: value });
+      });
+    });
+    assignBalancedHeatBucketsAdvanced(allItems).forEach(function (item) {
+      classMap[getDimensionBoardCellKeyAdvanced(item.rowIndex, item.metricIndex)] = "dimension-board-heat-" + item.bucket;
+    });
+    return classMap;
   }
 
   function renderSchemaPills(schema) {
@@ -3432,17 +3559,22 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     const visibleSeries = trendBundle.seriesMeta.filter(function (series) {
       return visibleSeriesKeys.includes(series.key);
     });
+    const comparableRows = comparisonRows.filter(function (row) {
+      return row.groupType === "experiment" && row.lifts[metric.id] !== null;
+    });
+    const visibleLiftRows = comparableRows.filter(function (row) {
+      return shouldShowLiftForSummaryTrend(metric.id, row.key);
+    });
+    const liftColumnVisible = isLiftColumnVisible(SUMMARY_TABLE_ID, metric.id);
+    const liftVisibleInTrend = state.showLiftBadges && liftColumnVisible && visibleLiftRows.length > 0;
     const peak = findPeakPoint(metric, trendBundle, visibleSeries);
-    const bestRow = comparisonRows
-      .filter(function (row) {
-        return row.groupType === "experiment" && row.lifts[metric.id] !== null;
-      })
+    const bestRow = visibleLiftRows
       .sort(function (left, right) {
         return right.lifts[metric.id] - left.lifts[metric.id];
       })[0];
     const momentum = findMomentumSeries(metric, trendBundle, visibleSeries);
 
-    return [
+    const insights = [
       {
         label: "当前最优实验",
         value: bestRow ? bestRow.label + " " + formatLift(bestRow.lifts[metric.id]) : "暂无可比 lift",
@@ -3459,6 +3591,12 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
         note: momentum ? "首日到末日变化 " + formatTrendMetric(metric, Math.abs(momentum.delta)) : "至少需要两个有效点位"
       }
     ];
+    if (!liftVisibleInTrend) {
+      insights[0].value = "涨幅已隐藏";
+      insights[0].note = "汇总表里该指标的涨幅显示已关闭";
+      if (momentum) insights[2].note = "涨幅数字已隐藏";
+    }
+    return insights;
   }
 
   function findPeakPoint(metric, trendBundle, visibleSeries) {
@@ -3681,6 +3819,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     const trendZoomScaleInput = document.getElementById("trendZoomScaleInput");
     const addBreakdownFieldBtn = document.getElementById("addBreakdownFieldBtn");
     const dimensionBoardDropzone = document.querySelector("[data-dimension-board-dropzone]");
+    const columnProfileToggle = document.querySelector("[data-toggle-column-profile]");
 
     if (experimentInput) {
       experimentInput.addEventListener("input", function (event) {
@@ -3699,6 +3838,14 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     if (endDateInput) {
       endDateInput.addEventListener("input", function (event) {
         state.dateRange.end = event.target.value;
+        render();
+      });
+    }
+
+    if (columnProfileToggle) {
+      columnProfileToggle.addEventListener("dblclick", function (event) {
+        event.preventDefault();
+        state.columnProfileExpanded = !state.columnProfileExpanded;
         render();
       });
     }
@@ -5960,6 +6107,31 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     ordered.splice(targetIndex, 0, draggedMetricId);
     state.metricOrder = ordered;
     return true;
+  }
+
+  function renderColumnProfileTable(schema) {
+    const expanded = Boolean(state.columnProfileExpanded);
+    const hint = expanded ? "双击收起字段展示" : "双击展开字段展示";
+    return (
+      '<div class="column-profile-block ' + (expanded ? "expanded" : "collapsed") + '">' +
+      '<button type="button" class="column-profile-toggle" data-toggle-column-profile="true" title="' + escapeHtml(hint) + '">' +
+      '<strong>字段展示</strong><span class="muted">' + escapeHtml(hint) + "</span></button>" +
+      (expanded
+        ? '<div class="table-toolbar"><button type="button" class="button-ghost mini" data-export-table="recognition-profile-table" data-export-file="ab-column-profile" data-export-title="字段画像表">导出 PDF</button></div>' +
+          '<div class="table-wrap recognition-table-wrap"><table id="recognition-profile-table" class="recognition-table"><thead><tr><th>字段名</th><th>角色</th><th>值类型</th><th>样例值</th></tr></thead><tbody>' +
+          schema.columns.map(function (column) {
+            const role = getColumnRole(schema, column.key);
+            const typeLabel = column.dateRatio >= 0.7
+              ? "日期"
+              : column.isMetricCandidate
+                ? (PERCENT_HEADER_HINTS.test(column.normalized) ? "百分比指标" : "数值指标")
+                : (column.isCategoricalCandidate ? "维度候选" : "通用字段");
+            return '<tr><td><strong>' + escapeHtml(column.label) + '</strong></td><td><span class="mini-tag">' + escapeHtml(role) + '</span></td><td>' + escapeHtml(typeLabel) + '</td><td>' + escapeHtml(column.sampleValues.slice(0, 4).join(" / ") || "--") + "</td></tr>";
+          }).join("") +
+          "</tbody></table></div>"
+        : "") +
+      "</div>"
+    );
   }
 
   if (typeof window !== "undefined") {

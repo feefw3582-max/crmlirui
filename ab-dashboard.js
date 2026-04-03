@@ -300,7 +300,9 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
           source: "base",
           type: isPercentMetric ? "percent" : "number",
           concept: detectMetricConcept(column.normalized),
-          multiplier: isPercentMetric ? detectPercentMultiplier(column) : 1
+          multiplier: isPercentMetric ? detectPercentMultiplier(column) : 1,
+          alignedValues: column.alignedValues,
+          isCumulative: column.isCumulative
         };
       }));
 
@@ -404,8 +406,10 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
         hasDimensionHint: hasDimensionHint,
         repeatedValueRatio: repeatedValueRatio,
         numericValues: numericValues,
+        alignedValues: rows.map(function (row) { return toNullableNumber(row[key]); }),
         nonEmptyRatio: nonEmptyRatio,
         mostlyRatioValues: mostlyRatioValues,
+        isCumulative: /(累计|累积|cumulative|cumul|running|todate|mtd|ytd)/i.test(normalized),
         isLowCardinalityNumeric: lowCardinalityNumeric,
         isMetricCandidate: (
           numericCount / nonEmptyCount >= 0.85 &&
@@ -4872,6 +4876,161 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     }
     if (presetId === "preset_arpu" && revenueMetric && additiveTrafficMetric) {
       return "{" + revenueMetric.label + "} / {" + additiveTrafficMetric.label + "}";
+    }
+    if (presetId === "preset_confidence") {
+      return "";
+    }
+    return "";
+  }
+
+  function getMetricSeries(metric) {
+    return metric && Array.isArray(metric.alignedValues) ? metric.alignedValues : [];
+  }
+
+  function computeRatioFitError(targetMetric, numeratorMetrics, denominatorMetric) {
+    if (!targetMetric || !numeratorMetrics.length || !denominatorMetric) return Number.POSITIVE_INFINITY;
+    const targetSeries = getMetricSeries(targetMetric);
+    const denominatorSeries = getMetricSeries(denominatorMetric);
+    if (!targetSeries.length || !denominatorSeries.length) return Number.POSITIVE_INFINITY;
+
+    let errorSum = 0;
+    let sampleCount = 0;
+    for (let index = 0; index < targetSeries.length; index += 1) {
+      const denominator = denominatorSeries[index];
+      const actualRaw = targetSeries[index];
+      if (!Number.isFinite(denominator) || denominator <= 0 || !Number.isFinite(actualRaw)) continue;
+      const numerator = numeratorMetrics.reduce(function (sum, metric) {
+        const series = getMetricSeries(metric);
+        return sum + (Number.isFinite(series[index]) ? series[index] : 0);
+      }, 0);
+      if (!Number.isFinite(numerator)) continue;
+      const predicted = numerator / denominator;
+      const actual = actualRaw * (targetMetric.multiplier || 1);
+      if (!Number.isFinite(predicted) || !Number.isFinite(actual)) continue;
+      errorSum += Math.abs(predicted - actual);
+      sampleCount += 1;
+    }
+
+    return sampleCount ? errorSum / sampleCount : Number.POSITIVE_INFINITY;
+  }
+
+  function rankRatioCandidates(targetMetric, numeratorMetrics, denominatorMetrics) {
+    return (denominatorMetrics || [])
+      .filter(Boolean)
+      .map(function (denominatorMetric) {
+        return {
+          metric: denominatorMetric,
+          error: computeRatioFitError(targetMetric, numeratorMetrics, denominatorMetric)
+        };
+      })
+      .filter(function (candidate) {
+        return Number.isFinite(candidate.error);
+      })
+      .sort(function (left, right) {
+        return left.error - right.error;
+      });
+  }
+
+  function attachAggregateMetricDefinitions(baseMetrics) {
+    const paidUvMetric = pickAdditiveMetricByHints(baseMetrics, ["付费uv", "payuv", "paiduv", "付费用户", "支付uv"]) ||
+      pickMetricByHints(baseMetrics, ["付费uv", "payuv", "paiduv", "付费用户", "支付uv"]);
+    const additiveTrafficMetric = pickTrafficMetric(baseMetrics, false);
+    const cumulativeTrafficMetric = pickMetricByHints(baseMetrics, ["累计进组uv", "累计uv", "进组uv", "uv", "user", "users", "visitor", "visitors", "traffic", "active", "展现uv"]);
+    const genericOrderMetric = pickMetricByHints(baseMetrics, ["订单量", "订单", "order", "orders", "purchase", "pay"]);
+    const vipOrderMetric = pickMetricByHints(baseMetrics, ["vip订单量", "vip订单", "viporder", "viporders"]);
+    const svipOrderMetric = pickMetricByHints(baseMetrics, ["svip订单量", "svip订单", "sviporder", "sviporders"]);
+    const clickMetric = pickMetricByHints(baseMetrics, ["click", "clicks", "tap", "taps", "hit", "点击"]);
+    const exposureMetric = pickMetricByHints(baseMetrics, ["impression", "impressions", "exposure", "show", "view", "pv", "曝光", "展示", "浏览"]);
+    const genericRevenueMetric = pickMetricByHints(baseMetrics, ["gmv", "revenue", "income", "sales", "tradeamt", "amount", "amt", "收入", "收益", "成交额"]);
+    const vipRevenueMetric = pickMetricByHints(baseMetrics, ["vip_gmv", "vipgmv", "vip收入", "vip收益", "vip成交额"]) || genericRevenueMetric;
+    const svipRevenueMetric = pickMetricByHints(baseMetrics, ["svip_gmv", "svipgmv", "svip收入", "svip收益", "svip成交额"]);
+
+    return baseMetrics.map(function (metric) {
+      const next = Object.assign({}, metric);
+      const normalized = String(metric.normalized || "").toLowerCase();
+      let numeratorMetrics = [];
+      let denominatorCandidates = [];
+
+      if (metric.type === "percent") {
+        if ((/vipandsvip|vip和svip|vipsvip/.test(normalized) || normalized.includes("和svip")) && (vipOrderMetric || svipOrderMetric)) {
+          numeratorMetrics = [vipOrderMetric, svipOrderMetric].filter(Boolean);
+          denominatorCandidates = [paidUvMetric, additiveTrafficMetric, cumulativeTrafficMetric];
+        } else if (metric.concept === "ctr" && clickMetric) {
+          numeratorMetrics = [clickMetric];
+          denominatorCandidates = [exposureMetric];
+        } else if (metric.concept === "conversion" || /转率|转化率|conversion|cvr/.test(normalized)) {
+          if (/svip/.test(normalized) && svipOrderMetric) {
+            numeratorMetrics = [svipOrderMetric];
+          } else if (/vip/.test(normalized) && vipOrderMetric) {
+            numeratorMetrics = [vipOrderMetric];
+          } else if (genericOrderMetric) {
+            numeratorMetrics = [genericOrderMetric];
+          }
+          denominatorCandidates = [paidUvMetric, additiveTrafficMetric, cumulativeTrafficMetric];
+        }
+      } else if (/arppu/.test(normalized) && vipRevenueMetric) {
+        numeratorMetrics = [vipRevenueMetric];
+        denominatorCandidates = [paidUvMetric];
+      } else if (/svip.*arpu/.test(normalized) && svipRevenueMetric) {
+        numeratorMetrics = [svipRevenueMetric];
+        denominatorCandidates = [additiveTrafficMetric, cumulativeTrafficMetric];
+      } else if ((metric.concept === "arpu" || /arpu/.test(normalized)) && vipRevenueMetric) {
+        numeratorMetrics = [vipRevenueMetric];
+        denominatorCandidates = [additiveTrafficMetric, cumulativeTrafficMetric];
+      }
+
+      if (!numeratorMetrics.length || !denominatorCandidates.length) {
+        return next;
+      }
+
+      const rankedCandidates = rankRatioCandidates(metric, numeratorMetrics, denominatorCandidates);
+      const bestCandidate = rankedCandidates[0];
+      if (!bestCandidate) {
+        return next;
+      }
+
+      next.inferredDenominatorId = bestCandidate.metric.id;
+      next.inferredFitError = bestCandidate.error;
+      next.aggregateNumeratorIds = numeratorMetrics.map(function (item) { return item.id; });
+
+      if (!bestCandidate.metric.isCumulative && bestCandidate.error <= 0.05) {
+        next.aggregateDenominatorId = bestCandidate.metric.id;
+      }
+
+      return next;
+    });
+  }
+
+  function getDefaultFormulaForPreset(presetId, baseMetrics) {
+    const existingConversionMetric = (baseMetrics || []).find(function (metric) {
+      return metric.aggregateDenominatorId && (metric.concept === "conversion" || /转率|转化率|conversion|cvr/.test(String(metric.normalized || "")));
+    });
+    const existingArpuMetric = (baseMetrics || []).find(function (metric) {
+      return metric.aggregateDenominatorId && (metric.concept === "arpu" || /arpu/.test(String(metric.normalized || "")));
+    });
+    const clickMetric = pickMetricByHints(baseMetrics, ["click", "clicks", "tap", "taps", "hit", "点击"]);
+    const exposureMetric = pickMetricByHints(baseMetrics, ["impression", "impressions", "exposure", "show", "view", "pv", "曝光", "展示", "浏览"]);
+    const revenueMetric = pickMetricByHints(baseMetrics, ["revenue", "gmv", "income", "sales", "tradeamt", "amount", "amt", "收益", "营收", "收入", "成交额"]);
+
+    if (presetId === "preset_ctr" && clickMetric && exposureMetric) {
+      return "{" + clickMetric.label + "} / {" + exposureMetric.label + "}";
+    }
+    if (presetId === "preset_conversion" && existingConversionMetric) {
+      const numeratorMetric = (baseMetrics || []).find(function (metric) { return metric.id === existingConversionMetric.aggregateNumeratorIds[0]; });
+      const denominatorMetric = (baseMetrics || []).find(function (metric) { return metric.id === existingConversionMetric.aggregateDenominatorId; });
+      if (numeratorMetric && denominatorMetric) {
+        return "{" + numeratorMetric.label + "} / {" + denominatorMetric.label + "}";
+      }
+    }
+    if (presetId === "preset_gmv" && revenueMetric) {
+      return "{" + revenueMetric.label + "}";
+    }
+    if (presetId === "preset_arpu" && existingArpuMetric) {
+      const numeratorMetric = (baseMetrics || []).find(function (metric) { return metric.id === existingArpuMetric.aggregateNumeratorIds[0]; });
+      const denominatorMetric = (baseMetrics || []).find(function (metric) { return metric.id === existingArpuMetric.aggregateDenominatorId; });
+      if (numeratorMetric && denominatorMetric) {
+        return "{" + numeratorMetric.label + "} / {" + denominatorMetric.label + "}";
+      }
     }
     if (presetId === "preset_confidence") {
       return "";

@@ -918,6 +918,27 @@ th {
   gap: 12px;
   align-items: flex-start;
   margin-bottom: 12px;
+  cursor: pointer;
+  position: relative;
+}
+
+.formula-card-head:focus-visible {
+  outline: 2px solid rgba(15, 157, 138, 0.35);
+  outline-offset: 2px;
+  border-radius: 10px;
+}
+
+.formula-card.is-collapsed > :not(.formula-card-head) {
+  display: none;
+}
+
+.formula-card.is-collapsed .formula-card-head {
+  margin-bottom: 0;
+}
+
+.formula-card.is-collapsed .formula-card-head .muted,
+.formula-card.is-collapsed .formula-card-head [data-remove-formula-config] {
+  display: none;
 }
 
 .formula-form-grid {

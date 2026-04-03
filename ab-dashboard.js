@@ -122,6 +122,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     metricDragSourceId: "",
     metricDragDidMove: false,
     formulaOverrides: [],
+    collapsedFormulaCards: {},
     customMetricCounter: 1,
     fieldOverrides: {
       experimentField: "",
@@ -4511,6 +4512,14 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     state.formulaOverrides = nextConfigs.slice().sort(function (left, right) {
       return (left.order || 0) - (right.order || 0);
     });
+    const validConfigIds = new Set(state.formulaOverrides.map(function (config) {
+      return config.id;
+    }));
+    Object.keys(state.collapsedFormulaCards || {}).forEach(function (configId) {
+      if (!validConfigIds.has(configId)) {
+        delete state.collapsedFormulaCards[configId];
+      }
+    });
     rebuildFromRawRows();
   }
 
@@ -4534,7 +4543,9 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
         presetId: card.getAttribute("data-preset-id") || existing.presetId || "",
         targetMetricId: card.getAttribute("data-target-metric-id") || existing.targetMetricId || "",
         label: labelInput && String(labelInput.value).trim() ? String(labelInput.value).trim() : (existing.label || "鑷畾涔夌粺璁￠噺"),
-        type: typeSelect && typeSelect.value === "percent" ? "percent" : "number",
+        type: typeSelect
+          ? (typeSelect.value === "percent" ? "percent" : "number")
+          : (existing.type === "percent" ? "percent" : "number"),
         formula: expressionInput ? String(expressionInput.value || "").trim() : (existing.formula || ""),
         roundToInteger: roundInput ? Boolean(roundInput.checked) : Boolean(existing.roundToInteger),
         compareToControl: compareInput ? Boolean(compareInput.checked) : Boolean(existing.compareToControl),
@@ -4601,6 +4612,32 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       });
     });
 
+    Array.prototype.forEach.call(document.querySelectorAll("[data-formula-config-card]"), function (card) {
+      const configId = card.getAttribute("data-formula-config-card");
+      const isCollapsed = state.collapsedFormulaCards[configId] !== false;
+      card.classList.toggle("is-collapsed", isCollapsed);
+      const head = card.querySelector(".formula-card-head");
+      if (!head) return;
+      head.setAttribute("data-toggle-formula-card", configId || "");
+      head.setAttribute("role", "button");
+      head.setAttribute("tabindex", "0");
+      head.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
+      head.setAttribute("data-collapse-label", isCollapsed ? "展开" : "收起");
+      const toggleCard = function (event) {
+        if (event && event.target && event.target.closest && event.target.closest("[data-remove-formula-config]")) return;
+        const collapsed = state.collapsedFormulaCards[configId] !== false;
+        state.collapsedFormulaCards[configId] = !collapsed;
+        render();
+      };
+      head.addEventListener("click", toggleCard);
+      head.addEventListener("keydown", function (event) {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          toggleCard(event);
+        }
+      });
+    });
+
     Array.prototype.forEach.call(document.querySelectorAll("[data-remove-formula-config]"), function (button) {
       button.addEventListener("click", function () {
         const configId = button.getAttribute("data-remove-formula-config");
@@ -4628,7 +4665,9 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     const addCustomMetricBtn = document.getElementById("addCustomMetricBtn");
     if (addCustomMetricBtn) {
       addCustomMetricBtn.addEventListener("click", function () {
-        const nextConfigs = getOrderedFormulaConfigs(state.schema).concat(createCustomFormulaConfig());
+        const customConfig = createCustomFormulaConfig();
+        state.collapsedFormulaCards[customConfig.id] = false;
+        const nextConfigs = getOrderedFormulaConfigs(state.schema).concat(customConfig);
         try {
           updateFormulaConfigs(nextConfigs);
           state.error = "";
@@ -4784,8 +4823,8 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       : '<button type="button" class="button-ghost mini" data-remove-formula-config="' + escapeHtml(config.id) + '" data-remove-mode="' + actionMode + '">' + actionLabel + "</button>";
 
     return (
-      '<article class="formula-card" data-formula-config-card="' + escapeHtml(config.id) + '" data-preset-id="' + escapeHtml(config.presetId || "") + '" data-is-custom="' + (config.isCustom ? "true" : "false") + '" data-target-metric-id="' + escapeHtml(config.targetMetricId || "") + '" data-order="' + escapeHtml(config.order || 0) + '">' +
-      '<div class="formula-card-head"><div><strong>' + escapeHtml(config.label) + '</strong><div class="muted">' + escapeHtml(cardMeta) + "</div></div>" +
+      '<article class="formula-card' + (state.collapsedFormulaCards[config.id] !== false ? " is-collapsed" : "") + '" data-formula-config-card="' + escapeHtml(config.id) + '" data-preset-id="' + escapeHtml(config.presetId || "") + '" data-is-custom="' + (config.isCustom ? "true" : "false") + '" data-target-metric-id="' + escapeHtml(config.targetMetricId || "") + '" data-order="' + escapeHtml(config.order || 0) + '">' +
+      '<div class="formula-card-head" data-collapse-label="' + (state.collapsedFormulaCards[config.id] !== false ? "展开" : "收起") + '" role="button" tabindex="0" aria-expanded="' + (state.collapsedFormulaCards[config.id] !== false ? "false" : "true") + '" data-toggle-formula-card="' + escapeHtml(config.id) + '"><div><strong>' + escapeHtml(config.label) + '</strong><div class="muted">' + escapeHtml(cardMeta) + "</div></div>" +
       actionButton + "</div>" +
       '<div class="formula-form-grid">' +
       '<label class="field"><span>统计量名称</span><input type="text" data-formula-label="' + escapeHtml(config.id) + '" value="' + escapeHtml(config.label) + '" placeholder="例如：点击率 / CVR / GMV" /></label>' +

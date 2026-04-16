@@ -2584,21 +2584,52 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
 
   function render() {
     normalizeState();
-    renderStatus();
+    const renderContext = buildRenderContext();
+    renderStatus(renderContext);
     renderMessages();
-    renderDashboard();
+    renderDashboard(renderContext);
   }
 
-  function renderStatus() {
-    const experimentIds = getExperimentIds(state.records);
-    const resolvedExperimentId = resolveExperimentId(experimentIds, state.experimentQuery);
-    const scope = getExperimentScope(state.records, resolvedExperimentId);
-    const dateFilteredRows = scope && state.schema && state.schema.dateField
-      ? filterRowsByDateRange(scope.rows, state.dateRange.start, state.dateRange.end)
-      : (scope ? scope.rows : []);
-    const filteredRows = scope ? filterRowsByDimensionFilters(dateFilteredRows, state.dimensionFilters) : [];
-    const selectedDays = scope && state.schema && state.schema.dateField
+  function buildRenderContext() {
+    const schema = state.schema;
+    const context = {
+      schema: schema,
+      experimentIds: [],
+      matchedExperimentIds: [],
+      resolvedExperimentId: "",
+      scope: null,
+      dateFilteredRows: [],
+      filteredRows: [],
+      overviewRows: [],
+      dimensionRows: [],
+      selectedDays: 0
+    };
+    if (!schema || !state.records.length) return context;
+
+    context.experimentIds = getExperimentIds(state.records);
+    context.matchedExperimentIds = filterExperimentIds(context.experimentIds, state.experimentQuery);
+    context.resolvedExperimentId = resolveExperimentId(context.experimentIds, state.experimentQuery);
+    context.scope = getExperimentScope(state.records, context.resolvedExperimentId);
+    if (!context.scope) return context;
+
+    context.dateFilteredRows = schema.dateField
+      ? filterRowsByDateRange(context.scope.rows, state.dateRange.start, state.dateRange.end)
+      : context.scope.rows;
+    context.filteredRows = filterRowsByDimensionFilters(context.dateFilteredRows, state.dimensionFilters);
+    context.overviewRows = selectOverviewRows(context.filteredRows, schema, state.dimensionFilters);
+    context.dimensionRows = selectDimensionBreakdownRows(context.filteredRows, schema, state.breakdownFields, state.dimensionFilters);
+    context.selectedDays = schema.dateField
       ? countDaysInclusive(state.dateRange.start, state.dateRange.end)
+      : 1;
+    return context;
+  }
+
+  function renderStatus(renderContext) {
+    const context = renderContext || buildRenderContext();
+    const scope = context.scope;
+    const filteredRows = context.filteredRows || [];
+    const selectedDays = scope && context.schema && context.schema.dateField
+      ? context.selectedDays
       : 0;
 
     const cards = [
@@ -2612,7 +2643,7 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
         icon: "数",
         label: "数据规模",
         value: state.records.length ? state.records.length + " 行" : "0 行",
-        note: state.records.length ? experimentIds.length + " 个实验" : "等待数据载入"
+        note: state.records.length ? (context.experimentIds || []).length + " 个实验" : "等待数据载入"
       },
       {
         icon: "构",
@@ -2660,12 +2691,12 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     dom.messageArea.innerHTML = blocks.join("");
   }
 
-  function renderDashboard() {
-    const schema = state.schema;
-    const experimentIds = getExperimentIds(state.records);
-    const matchedExperimentIds = filterExperimentIds(experimentIds, state.experimentQuery);
-    const resolvedExperimentId = resolveExperimentId(experimentIds, state.experimentQuery);
-    const scope = getExperimentScope(state.records, resolvedExperimentId);
+  function renderDashboard(renderContext) {
+    const context = renderContext || buildRenderContext();
+    const schema = context.schema;
+    const matchedExperimentIds = context.matchedExperimentIds || [];
+    const resolvedExperimentId = context.resolvedExperimentId || "";
+    const scope = context.scope;
 
     if (!schema || !scope) {
       dom.dashboardArea.innerHTML =
@@ -2675,15 +2706,10 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       return;
     }
 
-    const dateFilteredRows = schema.dateField
-      ? filterRowsByDateRange(scope.rows, state.dateRange.start, state.dateRange.end)
-      : scope.rows;
-    const filteredRows = filterRowsByDimensionFilters(dateFilteredRows, state.dimensionFilters);
-    const overviewRows = selectOverviewRows(filteredRows, schema, state.dimensionFilters);
-    const dimensionRows = selectDimensionBreakdownRows(filteredRows, schema, state.breakdownFields, state.dimensionFilters);
-    const selectedDays = schema.dateField
-      ? countDaysInclusive(state.dateRange.start, state.dateRange.end)
-      : 1;
+    const dateFilteredRows = context.dateFilteredRows;
+    const overviewRows = context.overviewRows;
+    const dimensionRows = context.dimensionRows;
+    const selectedDays = context.selectedDays;
 
     const comparisonRows = buildComparisonRows({
       rows: overviewRows,

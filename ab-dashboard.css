@@ -862,6 +862,10 @@ th {
   font-weight: 800;
 }
 
+.metric-col-hidden {
+  display: none !important;
+}
+
 .lift {
   display: inline-flex;
   margin-top: 6px;

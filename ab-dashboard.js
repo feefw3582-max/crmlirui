@@ -4029,10 +4029,15 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
           state.metricDragDidMove = false;
           return;
         }
+        const previousSortMetricId = state.tableSort.metricId;
         const scopeKey = button.getAttribute("data-toggle-metric-visibility");
         const metricId = button.getAttribute("data-metric-id");
         toggleMetricVisibility(scopeKey, metricId, state.schema);
-        render();
+        if (state.tableSort.metricId !== previousSortMetricId) {
+          render();
+          return;
+        }
+        applyMetricVisibilityToDom(state.schema);
       });
     });
 
@@ -6244,6 +6249,106 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       return validSeries.includes(key);
     });
     render();
+  }
+
+  function applyMetricVisibilityToDom(schema) {
+    if (!schema) return;
+    const hiddenSet = new Set(state.hiddenSummaryMetrics || []);
+    const visibleCount = getVisibleMetrics(schema, state.hiddenSummaryMetrics).length;
+
+    Array.prototype.forEach.call(document.querySelectorAll("[data-metric-col]"), function (cell) {
+      const metricId = cell.getAttribute("data-metric-col");
+      cell.classList.toggle("metric-col-hidden", hiddenSet.has(metricId));
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll('[data-metric-visibility-pill="true"]'), function (button) {
+      const metricId = button.getAttribute("data-metric-id") || "";
+      const label = button.getAttribute("data-metric-label") || metricId;
+      const hidden = hiddenSet.has(metricId);
+      button.classList.toggle("selected", !hidden);
+      button.classList.toggle("control", !hidden);
+      button.textContent = label + (hidden ? " · hidden" : " · shown");
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll("[data-metric-visible-count]"), function (node) {
+      node.textContent = visibleCount ? ("Showing " + visibleCount + " columns") : "All metrics hidden";
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll("[data-metric-all-hidden-note]"), function (node) {
+      node.style.display = visibleCount ? "none" : "block";
+    });
+  }
+
+  function renderMetricVisibilityToolbar(schema, hiddenMetricIds, scopeKey, title) {
+    const orderedMetrics = getMetricsInConfiguredOrder(schema);
+    const hiddenSet = new Set(hiddenMetricIds || []);
+    const visibleCount = orderedMetrics.filter(function (metric) {
+      return !hiddenSet.has(metric.id);
+    }).length;
+    return (
+      '<div class="filter-block compact-block"><div class="filter-head"><strong>' + escapeHtml(title) + '</strong><span class="muted" data-metric-visible-count="' + escapeHtml(scopeKey) + '">' +
+      escapeHtml(visibleCount ? ("Showing " + visibleCount + " columns") : "All metrics hidden") +
+      '</span></div><div class="pill-row">' +
+      orderedMetrics.map(function (metric) {
+        const hidden = hiddenSet.has(metric.id);
+        return '<button type="button" class="pill metric-visibility-pill ' + (hidden ? "" : "selected control") + '" data-metric-visibility-pill="true" data-toggle-metric-visibility="' + escapeHtml(scopeKey) + '" data-metric-id="' + escapeHtml(metric.id) + '" data-metric-label="' + escapeHtml(metric.label) + '">' + escapeHtml(metric.label + (hidden ? " · hidden" : " · shown")) + "</button>";
+      }).join("") +
+      "</div></div>"
+    );
+  }
+
+  function renderComparisonTable(schema, rows, options) {
+    const sortedRows = sortComparisonRows(rows);
+    const hiddenMetricIds = options && options.hiddenMetricIds ? options.hiddenMetricIds : [];
+    const hiddenSet = new Set(hiddenMetricIds);
+    const allMetrics = getMetricsInConfiguredOrder(schema);
+    const visibleMetrics = allMetrics.filter(function (metric) {
+      return !hiddenSet.has(metric.id);
+    });
+    const tableId = options && options.tableId ? options.tableId : ("comparison-table-" + Math.random().toString(36).slice(2, 8));
+    const exportFileName = options && options.exportFileName ? options.exportFileName : "ab-table-export";
+    const exportTitle = options && options.exportTitle ? options.exportTitle : "AB table export";
+
+    if (!allMetrics.length) {
+      return '<div class="empty inline-empty"><div><strong>No metrics</strong><p class="muted">Upload data with numeric metric columns.</p></div></div>';
+    }
+
+    return (
+      '<div class="table-toolbar"><div class="table-toolbar-actions">' +
+      '<button type="button" class="button-ghost mini' + (state.showLiftBadges ? " active" : "") + '" data-toggle-lift-visibility="true">' + (state.showLiftBadges ? "隐藏全部涨幅比" : "显示全部涨幅比") + "</button>" +
+      '<button type="button" class="button-ghost mini" data-export-table="' + escapeHtml(tableId) + '" data-export-file="' + escapeHtml(exportFileName) + '" data-export-title="' + escapeHtml(exportTitle) + '">导出 PDF</button>' +
+      "</div></div>" +
+      '<div class="field-note" data-metric-all-hidden-note="true" style="' + (visibleMetrics.length ? "display:none;" : "display:block;") + 'margin-bottom:8px;">当前已隐藏全部统计列，可在上方“列显示控制”中恢复。</div>' +
+      '<div class="table-wrap"><table id="' + escapeHtml(tableId) + '"><thead><tr><th class="sticky-col">组别</th>' +
+      allMetrics.map(function (metric) {
+        const active = state.tableSort.metricId === metric.id;
+        const arrow = active ? (state.tableSort.direction === "desc" ? "↓" : "↑") : "↕";
+        const liftVisible = isLiftColumnVisible(tableId, metric.id);
+        const hiddenClass = hiddenSet.has(metric.id) ? " metric-col-hidden" : "";
+        return '<th class="' + hiddenClass + '" data-metric-col="' + escapeHtml(metric.id) + '"><div class="metric-head"><button type="button" class="metric-label-toggle ' + (liftVisible ? "active" : "") + '" data-toggle-lift-column="' + escapeHtml(metric.id) + '" data-table-id="' + escapeHtml(tableId) + '" title="' + (liftVisible ? "隐藏这一列涨幅比" : "显示这一列涨幅比") + '"><span class="metric-label-text">' + escapeHtml(getMetricDisplayLabel(metric)) + '</span><span class="metric-lift-underline"></span></button><button type="button" class="sort-arrow-button ' + (active ? "active" : "") + '" data-sort-metric="' + metric.id + '" aria-label="sort ' + escapeHtml(metric.id) + '">' + arrow + "</button></div></th>";
+      }).join("") +
+      "</tr></thead><tbody>" +
+      sortedRows.map(function (row) {
+        const rowLiftVisible = isLiftRowVisible(tableId, row.key);
+        return (
+          '<tr class="' + (row.hasData ? "" : "row-muted") + '"><td class="group-cell sticky-col"><div class="group-cell-head"><button type="button" class="group-label-toggle ' + (rowLiftVisible ? "active" : "") + '" data-toggle-lift-row="' + escapeHtml(row.key) + '" data-table-id="' + escapeHtml(tableId) + '" title="' + (rowLiftVisible ? "隐藏这一行涨幅比" : "显示这一行涨幅比") + '"><span class="group-label-text">' + escapeHtml(row.label) + '</span><span class="metric-lift-underline"></span></button></div><span class="muted">' +
+          escapeHtml(row.hasData ? (row.groupType === "control" ? "来源：" + row.sourceGroups.join("、") : "实验组单独展示") : "当前切片下暂无样本") +
+          "</span></td>" +
+          allMetrics.map(function (metric) {
+            const mainValue = getComparisonMetricDisplayValue(metric, row);
+            const secondaryInfo = getComparisonMetricSecondaryInfo(metric, row);
+            const hiddenClass = hiddenSet.has(metric.id) ? " metric-col-hidden" : "";
+            return (
+              '<td class="' + hiddenClass + '" data-metric-col="' + escapeHtml(metric.id) + '"><span class="metric-main">' + escapeHtml(isCompareToControlMetric(metric) ? formatCompareMetric(mainValue, metric) : formatMetric(metric, mainValue)) + '</span>' +
+              (shouldShowLiftBadge(tableId, row.key, metric.id, secondaryInfo) ? '<span class="lift ' + secondaryInfo.className + '">' + escapeHtml(secondaryInfo.text) + "</span>" : "") +
+              "</td>"
+            );
+          }).join("") +
+          "</tr>"
+        );
+      }).join("") +
+      "</tbody></table></div>"
+    );
   }
 
   function groupRowsByFast(rows, keyResolver) {

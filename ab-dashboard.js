@@ -71,6 +71,8 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
   const integerFormatter = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 });
   const DEFAULT_AUTO_VISIBLE_METRIC_HINTS = /(uv|dau|gmv|arpu|arppu|conversion|cvr|转|杞寲)/i;
   const SUMMARY_TABLE_ID = "summary-comparison-table";
+  const LARGE_DATA_CELL_THRESHOLD = 200000;
+  const DIMENSION_SECTION_CHUNK = 80;
 
   const dom = {
     appRoot: document.getElementById("appRoot"),
@@ -131,6 +133,9 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     collapsedFormulaCards: {},
     columnProfileExpanded: false,
     customMetricCounter: 1,
+    largeDataMode: false,
+    dimensionPanelRenderCount: DIMENSION_SECTION_CHUNK,
+    dimensionSectionTotalCount: 0,
     fieldOverrides: {
       experimentField: "",
       dateField: "",
@@ -219,7 +224,28 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     state.records = parsed.rows;
     state.schema = parsed.schema;
     state.warnings = parsed.warnings;
+    state.largeDataMode = detectLargeDataMode(state.rawRows, state.schema);
+    state.dimensionPanelRenderCount = state.largeDataMode ? DIMENSION_SECTION_CHUNK : Number.MAX_SAFE_INTEGER;
+    state.dimensionSectionTotalCount = 0;
     normalizeState();
+  }
+
+  function detectLargeDataMode(rawRows, schema) {
+    const rowCount = Array.isArray(rawRows) ? rawRows.length : 0;
+    const columnCount = schema && schema.columns && schema.columns.length
+      ? schema.columns.length
+      : inferRawColumnCount(rawRows);
+    return rowCount * Math.max(1, columnCount) >= LARGE_DATA_CELL_THRESHOLD;
+  }
+
+  function inferRawColumnCount(rawRows) {
+    const first = Array.isArray(rawRows) && rawRows.length ? rawRows[0] : null;
+    return first && typeof first === "object" ? Object.keys(first).length : 0;
+  }
+
+  function getDimensionSectionRenderLimit() {
+    if (!state.largeDataMode) return Number.MAX_SAFE_INTEGER;
+    return Math.max(DIMENSION_SECTION_CHUNK, Number(state.dimensionPanelRenderCount) || DIMENSION_SECTION_CHUNK);
   }
 
   function normalizeRows(inputRows, overrides, formulaOverrides) {
@@ -1174,6 +1200,9 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       state.metricDragSourceId = "";
       state.metricDragDidMove = false;
       state.columnProfileExpanded = false;
+      state.largeDataMode = false;
+      state.dimensionPanelRenderCount = DIMENSION_SECTION_CHUNK;
+      state.dimensionSectionTotalCount = 0;
       state.trendXAxis = "date";
       state.trendChartType = "line";
       state.trendZoomScale = 1;
@@ -1200,6 +1229,12 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
     const resolvedExperimentId = resolveExperimentId(experimentIds, state.experimentQuery);
     const scope = getExperimentScope(state.records, resolvedExperimentId);
     if (!scope) return;
+
+    if (!state.largeDataMode) {
+      state.dimensionPanelRenderCount = Number.MAX_SAFE_INTEGER;
+    } else if (!Number.isFinite(state.dimensionPanelRenderCount) || state.dimensionPanelRenderCount < DIMENSION_SECTION_CHUNK) {
+      state.dimensionPanelRenderCount = DIMENSION_SECTION_CHUNK;
+    }
 
     if (!["independent", "cumulative"].includes(state.uvAggregationMode)) {
       state.uvAggregationMode = getRecommendedUvAggregationMode(schema);
@@ -4367,6 +4402,14 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       });
     }
 
+    const loadMoreDimensionsBtn = document.getElementById("loadMoreDimensionsBtn");
+    if (loadMoreDimensionsBtn) {
+      loadMoreDimensionsBtn.addEventListener("click", function () {
+        state.dimensionPanelRenderCount = (Number(state.dimensionPanelRenderCount) || DIMENSION_SECTION_CHUNK) + DIMENSION_SECTION_CHUNK;
+        render();
+      });
+    }
+
     bindExtraDashboardEvents(scope);
   }
 
@@ -6175,6 +6218,324 @@ AB-2026-03,2026-03-22,策略B,初中,英语,4040,8290,699,122,5880`;
       return validSeries.includes(key);
     });
     render();
+  }
+
+  function groupRowsByFast(rows, keyResolver) {
+    const grouped = Object.create(null);
+    (rows || []).forEach(function (row) {
+      const key = String(keyResolver(row));
+      if (!grouped[key]) grouped[key] = [];
+      grouped[key].push(row);
+    });
+    return grouped;
+  }
+
+  function collectRowsForGroupsFast(groupedRowsByGroup, groups) {
+    const collected = [];
+    (groups || []).forEach(function (groupName) {
+      const scopedRows = groupedRowsByGroup[groupName];
+      if (scopedRows && scopedRows.length) {
+        Array.prototype.push.apply(collected, scopedRows);
+      }
+    });
+    return collected;
+  }
+
+  function cloneAggregateBundleFast(bundle) {
+    const totals = {};
+    const counts = {};
+    Object.keys(bundle.totals || {}).forEach(function (key) {
+      totals[key] = bundle.totals[key];
+    });
+    Object.keys(bundle.counts || {}).forEach(function (key) {
+      counts[key] = bundle.counts[key];
+    });
+    return {
+      totals: totals,
+      counts: counts,
+      hasData: Boolean(bundle.hasData),
+      rowCount: Number(bundle.rowCount) || 0
+    };
+  }
+
+  function buildComparisonRows(options) {
+    const schema = options.schema;
+    const rows = [];
+    let mergedControl = null;
+    const groupedRowsByGroup = groupRowsByFast(options.rows, function (row) {
+      return row.groupName;
+    });
+
+    if (options.selectedControls.length) {
+      const controlRows = collectRowsForGroupsFast(groupedRowsByGroup, options.selectedControls);
+      const mergedBase = buildMergedControlMetrics(options.rows, options.selectedControls, schema, groupedRowsByGroup);
+      mergedControl = createComparisonRow({
+        key: "control_merged",
+        label: "对照组均值",
+        groupName: "对照组均值",
+        groupType: "control",
+        sourceGroups: mergedBase.sourceGroups,
+        baseBundle: applyCaliber(mergedBase, options.caliber, options.days),
+        contextRows: controlRows,
+        controlReference: null,
+        schema: schema
+      });
+      rows.push(mergedControl);
+    }
+
+    (options.selectedExperiments || []).forEach(function (groupName) {
+      const experimentRows = groupedRowsByGroup[groupName] || [];
+      const baseMetrics = aggregateRows(experimentRows, schema);
+      rows.push(createComparisonRow({
+        key: "experiment:" + groupName,
+        label: groupName,
+        groupName: groupName,
+        groupType: "experiment",
+        sourceGroups: [groupName],
+        baseBundle: applyCaliber(baseMetrics, options.caliber, options.days),
+        contextRows: experimentRows,
+        controlReference: mergedControl,
+        schema: schema
+      }));
+    });
+
+    return rows;
+  }
+
+  function buildMergedControlMetrics(rows, selectedControls, schema, groupedRowsByGroup) {
+    const emptyAggregate = aggregateRows([], schema);
+    const aggregateMetricIds = Object.keys(emptyAggregate.totals || {});
+    const bundles = (selectedControls || [])
+      .map(function (groupName) {
+        const scopedRows = groupedRowsByGroup && groupedRowsByGroup[groupName]
+          ? groupedRowsByGroup[groupName]
+          : (rows || []).filter(function (row) { return row.groupName === groupName; });
+        const baseBundle = aggregateRows(scopedRows, schema);
+        return {
+          groupName: groupName,
+          baseBundle: baseBundle
+        };
+      })
+      .filter(function (item) {
+        return item.baseBundle.hasData;
+      });
+
+    if (!bundles.length) {
+      const emptyBundle = cloneAggregateBundleFast(emptyAggregate);
+      emptyBundle.sourceGroups = [];
+      return emptyBundle;
+    }
+
+    const summed = bundles.reduce(function (accumulator, item) {
+      aggregateMetricIds.forEach(function (metricId) {
+        accumulator.totals[metricId] += item.baseBundle.totals[metricId] || 0;
+        accumulator.counts[metricId] += item.baseBundle.counts[metricId] || 0;
+      });
+      accumulator.rowCount += item.baseBundle.rowCount || 0;
+      return accumulator;
+    }, {
+      totals: aggregateMetricIds.reduce(function (map, metricId) { map[metricId] = 0; return map; }, {}),
+      counts: aggregateMetricIds.reduce(function (map, metricId) { map[metricId] = 0; return map; }, {}),
+      rowCount: 0
+    });
+
+    const next = {};
+    const counts = {};
+    aggregateMetricIds.forEach(function (metricId) {
+      next[metricId] = summed.totals[metricId] / bundles.length;
+      counts[metricId] = summed.counts[metricId] / bundles.length;
+    });
+    return {
+      totals: next,
+      counts: counts,
+      hasData: true,
+      rowCount: summed.rowCount,
+      sourceGroups: bundles.map(function (item) { return item.groupName; })
+    };
+  }
+
+  function buildTrendData(options) {
+    const schema = options.schema;
+    const xFieldId = options.xFieldId || "date";
+    if (xFieldId === "date" && !schema.dateField) return { data: [], seriesMeta: [], xFieldId: xFieldId, xValues: [] };
+
+    const rowsByX = groupRowsByFast(options.rows, function (row) {
+      return getXAxisValue(row, xFieldId);
+    });
+    const xValues = Object.keys(rowsByX).sort(function (left, right) {
+      return xFieldId === "date" ? left.localeCompare(right) : collator.compare(left, right);
+    });
+    const seriesMeta = [];
+
+    if ((options.selectedControls || []).length) {
+      seriesMeta.push({
+        key: "control_merged",
+        label: "对照组均值",
+        groupType: "control",
+        sourceGroups: options.selectedControls
+      });
+    }
+
+    (options.selectedExperiments || []).forEach(function (groupName) {
+      seriesMeta.push({
+        key: "experiment:" + groupName,
+        label: groupName,
+        groupType: "experiment",
+        sourceGroups: [groupName]
+      });
+    });
+
+    const data = xValues.map(function (xValue) {
+      const point = { xValue: xValue };
+      const xRows = rowsByX[xValue] || [];
+      const groupedRowsByGroup = groupRowsByFast(xRows, function (row) { return row.groupName; });
+      let controlValues = null;
+
+      if ((options.selectedControls || []).length) {
+        const controlRows = collectRowsForGroupsFast(groupedRowsByGroup, options.selectedControls);
+        const controlBase = buildMergedControlMetrics(xRows, options.selectedControls, schema, groupedRowsByGroup);
+        controlValues = computeMetricValues(schema, controlBase, controlRows);
+        (schema.metrics || []).forEach(function (metric) {
+          point[getSeriesMetricKey("control_merged", metric.id)] = isCompareToControlMetric(metric)
+            ? null
+            : controlValues[metric.id];
+        });
+      }
+
+      (options.selectedExperiments || []).forEach(function (groupName) {
+        const key = "experiment:" + groupName;
+        const experimentRows = groupedRowsByGroup[groupName] || [];
+        const baseMetrics = aggregateRows(experimentRows, schema);
+        const experimentValues = computeMetricValues(schema, baseMetrics, experimentRows);
+        (schema.metrics || []).forEach(function (metric) {
+          point[getSeriesMetricKey(key, metric.id)] = isCompareToControlMetric(metric)
+            ? calculateLift(experimentValues[metric.id], controlValues ? controlValues[metric.id] : null)
+            : experimentValues[metric.id];
+        });
+      });
+
+      return point;
+    });
+
+    return {
+      data: data,
+      seriesMeta: seriesMeta,
+      xFieldId: xFieldId,
+      xValues: xValues
+    };
+  }
+
+  function buildDimensionSections(options) {
+    if (!options.dimensionFieldIds || !options.dimensionFieldIds.length) {
+      state.dimensionSectionTotalCount = 0;
+      return [];
+    }
+    const sectionMap = {};
+    (options.rows || []).forEach(function (row) {
+      const parts = options.dimensionFieldIds.map(function (fieldId) {
+        return {
+          fieldId: fieldId,
+          fieldLabel: getDimensionLabel(options.schema, fieldId),
+          value: getBreakdownFieldValue(row, fieldId)
+        };
+      });
+      const sectionKey = buildDimensionSectionKey(parts);
+      if (!sectionMap[sectionKey]) {
+        sectionMap[sectionKey] = {
+          key: sectionKey,
+          parts: parts,
+          label: parts.map(function (part) {
+            return part.fieldLabel + "=" + part.value;
+          }).join(" · "),
+          rows: []
+        };
+      }
+      sectionMap[sectionKey].rows.push(row);
+    });
+
+    const allKeys = Object.keys(sectionMap).sort(collator.compare);
+    state.dimensionSectionTotalCount = allKeys.length;
+    const limit = getDimensionSectionRenderLimit();
+    const visibleKeys = allKeys.slice(0, Math.min(allKeys.length, limit));
+    const visibleKeySet = new Set(visibleKeys);
+    (state.openDimensions || []).forEach(function (key) {
+      if (sectionMap[key]) visibleKeySet.add(key);
+    });
+
+    return allKeys.filter(function (sectionKey) {
+      return visibleKeySet.has(sectionKey);
+    }).map(function (sectionKey) {
+      const section = sectionMap[sectionKey];
+      const sourceRows = section.rows.slice();
+      return {
+        key: section.key,
+        label: section.label,
+        parts: section.parts,
+        sourceRows: sourceRows,
+        rows: buildComparisonRows({
+          rows: sourceRows,
+          selectedControls: options.selectedControls,
+          selectedExperiments: options.selectedExperiments,
+          caliber: options.caliber,
+          days: options.days,
+          schema: options.schema
+        })
+      };
+    }).filter(function (section) {
+      return section.rows.length > 0;
+    });
+  }
+
+  function renderDimensionPanel(schema, sections, scope) {
+    if (!getBreakdownFieldOptions(schema).length) {
+      return (
+        '<section class="panel"><div class="panel-head"><div><p class="eyebrow">属性拆解</p><h2>维度对比</h2></div></div>' +
+        '<div class="empty"><div><strong>当前数据未识别出明显属性字段</strong><p class="muted">像 grade / subject / city / channel 这类低基数字段，会被自动识别为维度。</p></div></div></section>'
+      );
+    }
+
+    const totalCount = Math.max(Number(state.dimensionSectionTotalCount) || 0, sections.length);
+    const hasMoreSections = totalCount > sections.length;
+    const modeHint = state.largeDataMode
+      ? ('大数据模式：当前只渲染 ' + sections.length + ' / ' + totalCount + ' 个维度分组，点击“加载更多”继续。')
+      : ('当前共 ' + totalCount + ' 个维度分组。');
+
+    return (
+      '<section class="panel">' +
+      '<div class="panel-head"><div><p class="eyebrow">属性拆解</p><h2>按维度查看对比结果</h2>' +
+      '<div class="subtitle">这里可以单独选组别，也可以叠加多个属性一起拆解。</div></div>' +
+      '<div class="button-row"><button class="button-ghost" type="button" id="expandAllDimensionsBtn">全部展开</button>' +
+      '<button class="button-ghost" type="button" id="collapseAllDimensionsBtn">全部收起</button></div></div>' +
+      '<div class="field-note" style="margin-bottom:10px;">' + escapeHtml(modeHint) + "</div>" +
+      renderBreakdownFieldBuilder(schema) +
+      renderDimensionGroupEditor(scope) +
+      renderMetricVisibilityToolbar(schema, state.hiddenSummaryMetrics, "dimension", "属性拆解列显示控制") +
+      renderDimensionBoardPanel(schema, sections) +
+      '<div class="accordion-list">' +
+      sections.map(function (section) {
+        const key = section.key;
+        const open = state.openDimensions.includes(key);
+        const panelId = "dimension-panel-" + slugify(key);
+        return (
+          '<article class="accordion-item" id="' + panelId + '">' +
+          '<button class="accordion-trigger" type="button" data-toggle-dimension="' + escapeHtml(key) + '">' +
+          '<div><strong>' + escapeHtml(section.label) + '</strong><div class="muted">' + (open ? "点击收起当前属性组合" : "点击展开当前属性组合") + "</div></div>" +
+          "<strong>" + (open ? "-" : "+") + "</strong></button>" +
+          (open ? '<div class="accordion-body">' + renderComparisonTable(schema, section.rows, {
+            hiddenMetricIds: state.hiddenSummaryMetrics,
+            tableId: "dimension-table-" + slugify(key),
+            exportFileName: "ab-dimension-" + slugify(key),
+            exportTitle: section.label + " comparison table"
+          }) + "</div>" : "") +
+          "</article>"
+        );
+      }).join("") +
+      "</div>" +
+      (hasMoreSections
+        ? '<div class="button-row" style="margin-top:12px;"><button class="button-ghost" type="button" id="loadMoreDimensionsBtn">加载更多分组（已显示 ' + sections.length + " / " + totalCount + "）</button></div>"
+        : "") +
+      "</section>"
+    );
   }
 
   if (typeof window !== "undefined") {
